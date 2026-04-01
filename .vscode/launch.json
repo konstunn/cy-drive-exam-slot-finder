@@ -1,0 +1,76 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch Bot",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/cmd/bot/main.go",
+            "env": {
+                "TELEGRAM_BOT_TOKEN": "${input:botToken}",
+                "SCRAPER_USERNAME": "${input:scraperUsername}",
+                "SCRAPER_PASSWORD": "${input:scraperPassword}"
+            },
+            "args": [],
+            "showLog": true,
+            "preLaunchTask": "",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Launch Bot (Release)",
+            "type": "go",
+            "request": "launch",
+            "mode": "exec",
+            "program": "${workspaceFolder}/slot-finder-bot",
+            "env": {
+                "TELEGRAM_BOT_TOKEN": "${input:botToken}",
+                "SCRAPER_USERNAME": "${input:scraperUsername}",
+                "SCRAPER_PASSWORD": "${input:scraperPassword}"
+            },
+            "args": [],
+            "showLog": true,
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Debug Tests",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}",
+            "args": ["-test.v"],
+            "showLog": true,
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Debug Bot Package Tests",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/internal/bot",
+            "args": ["-test.v"],
+            "showLog": true,
+            "console": "integratedTerminal"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "botToken",
+            "description": "Enter your Telegram Bot Token",
+            "default": "",
+            "type": "promptString"
+        },
+        {
+            "id": "scraperUsername",
+            "description": "Enter scraper username",
+            "default": "",
+            "type": "promptString"
+        },
+        {
+            "id": "scraperPassword",
+            "description": "Enter scraper password",
+            "default": "",
+            "type": "promptString"
+        }
+    ]
+}

@@ -1,0 +1,43 @@
+{
+    "go.toolsManagement.checkForUpdates": "local",
+    "go.useLanguageServer": true,
+    "go.formatTool": "gofmt",
+    "go.lintTool": "golint",
+    "go.vetOnSave": "package",
+    "go.testOnSave": false,
+    "go.coverOnSave": false,
+    "go.lintOnSave": "package",
+    "go.buildOnSave": "off",
+    "go.testFlags": ["-v"],
+    "go.testTimeout": "30s",
+    "go.addTags": {
+        "tags": "json",
+        "options": "json=omitempty",
+        "promptForTags": false,
+        "transform": "snakecase"
+    },
+    "go.removeTags": {
+        "tags": "json",
+        "options": "",
+        "promptForTags": false
+    },
+    "go.alternateTools": {
+        "go": "go",
+        "gofmt": "gofmt",
+        "goimports": "goimports",
+        "golint": "golint",
+        "gopls": "gopls"
+    },
+    "[go]": {
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.organizeImports": true
+        }
+    },
+    "[go.mod]": {
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.organizeImports": true
+        }
+    }
+}
