@@ -1,6 +1,8 @@
 package pkg
 
 import (
+	"time"
+
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
@@ -19,13 +21,11 @@ type Credentials struct {
 // Scraper defines the interface for slot scraping operations
 type Scraper interface {
 	Login(creds Credentials) error
-	FindAvailableSlots() ([]Slot, error)
 }
 
-// Slot represents an available driving exam slot
-type Slot struct {
-	Date     string
-	Time     string
-	Location string
-	Type     string
+// ExamTimeSlot represents an available driving exam slot
+type ExamTimeSlot struct {
+	Time            time.Time
+	ExamCenterCity  string
+	LicenseCategory string
 }

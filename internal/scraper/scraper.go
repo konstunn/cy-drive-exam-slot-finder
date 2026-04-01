@@ -88,8 +88,136 @@ func (s *ChromeScraper) Login(creds pkg.Credentials) error {
 	return nil
 }
 
-// NavigateToRebookCalendar navigates to the rebooking calendar page
-func (s *ChromeScraper) NavigateToRebookCalendar() error {
+// NavigateToCancelRebook navigates to the rebooking calendar page
+func (s *ChromeScraper) NavigateToCancelRebook() error {
+	if err := s.checkInitializedLoggedIn(); err != nil {
+		return err
+	}
+
+	url := "https://rtd.mcw.gov.cy/WebPhase1/gui/dlcalendar/CancelRebookCalendar.jsp"
+
+	err := chromedp.Run(s.ctx,
+		chromedp.Navigate(url),
+		chromedp.WaitReady("body"),
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to navigate to calendar: %w", err)
+	}
+
+	return nil
+}
+
+// ChooseExistingExam selects the existing exam to proceed with rebooking
+func (s *ChromeScraper) ChooseExistingExam() error {
+	if err := s.checkInitializedLoggedIn(); err != nil {
+		return err
+	}
+
+	// now it chooses the default one exam,
+	// TODO: add logic to select the needed exam if > 1 exam is available
+	err := chromedp.Run(s.ctx,
+		chromedp.WaitReady("button"),
+		chromedp.Click(`button`, chromedp.ByQuery),
+		chromedp.WaitReady("body"),
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to choose existing exam: %w", err)
+	}
+	return nil
+}
+
+// GetExamCityCenters retrieves the list of available exam city centers
+func (s *ChromeScraper) GetExamCityCenters() ([]string, error) {
+	if err := s.checkInitializedLoggedIn(); err != nil {
+		return nil, err
+	}
+
+	var cityCenters []string
+
+	err := chromedp.Run(s.ctx,
+		chromedp.WaitReady("body"),
+		chromedp.WaitVisible(`select[name="h_centre"]`, chromedp.ByQuery),
+		chromedp.EvaluateAsDevTools(
+			`Array.from(document.querySelectorAll('select[name="h_centre"] option')).map(option => option.textContent)`,
+			&cityCenters,
+		),
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get exam city centers: %w", err)
+	}
+
+	return cityCenters, nil
+}
+
+// ExamDetails represents the details required to search for available slots
+type ExamDetails struct {
+	CenterCity     string
+	CarPlateNumber string
+}
+
+// SubmitExamDetails submits the exam center and plate number to search for available slots
+func (s *ChromeScraper) SubmitExamDetails(exam ExamDetails) error {
+	if err := s.checkInitializedLoggedIn(); err != nil {
+		return err
+	}
+
+	if exam.CenterCity == "" || exam.CarPlateNumber == "" {
+		return fmt.Errorf("center city and car plate number must be provided")
+	}
+
+	err := chromedp.Run(s.ctx,
+		chromedp.WaitReady("body"),
+		chromedp.WaitVisible(`select[name="h_centre"]`, chromedp.ByQuery),
+		chromedp.SetValue(`select[name="h_centre"]`, exam.CenterCity, chromedp.ByQuery),
+		chromedp.SetValue(`input[name="h_vrm"]`, exam.CarPlateNumber, chromedp.ByQuery),
+		// submit exam center and plate number
+		chromedp.Click(`button[id="submitBtn"]`, chromedp.ByQuery),
+		chromedp.WaitReady("body"),
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to submit exam center and plate: %w", err)
+	}
+	return nil
+}
+
+type GetTimeSlotsAction struct {}
+
+func (a *GetTimeSlotsAction) Do(context.Context) error {
+	// This is a placeholder for the actual implementation of retrieving time slots
+	// In a real implementation, you would interact with the page to extract available time slots
+	return nil
+}
+
+// GetTimeSlots retrieves available time slots
+func (s *ChromeScraper) GetTimeSlots() ([]time.Time, error) {
+	emptyTimes := []time.Time{}
+
+	if err := s.checkInitializedLoggedIn(); err != nil {
+		return emptyTimes, err
+	}
+
+	var timeSlots []time.Time
+
+	err := chromedp.Run(s.ctx,
+		chromedp.WaitReady("body"),
+		chromedp.EvaluateAsDevTools(
+			`Array.from(document.querySelectorAll('.time-slot')).map(slot => slot.textContent)`,
+			&timeSlots,
+		),
+	)
+
+	if err != nil {
+		return emptyTimes, fmt.Errorf("failed to get time slots: %w", err)
+	}
+
+	return timeSlots, nil
+}
+
+func (s *ChromeScraper) checkInitializedLoggedIn() error {
 	if s.ctx == nil {
 		return fmt.Errorf("browser not initialized: call InitBrowser() first")
 	}
@@ -97,86 +225,5 @@ func (s *ChromeScraper) NavigateToRebookCalendar() error {
 	if !s.isLoggedIn {
 		return fmt.Errorf("not logged in: please call Login() first")
 	}
-
-	url := "https://rtd.mcw.gov.cy/WebPhase1/gui/dlcalendar/CancelRebookCalendar.jsp"
-
-	todayStr := ""
-
-	err := chromedp.Run(s.ctx,
-		chromedp.Navigate(url),
-		chromedp.WaitReady("body"),
-		chromedp.WaitVisible("button"),
-		// click next button to proceed with the default one exam
-		// TODO: add logic to select the needed exam if > 1 exam is available
-		chromedp.Click(`button`, chromedp.ByQuery),
-
-		chromedp.WaitReady("body"),
-		chromedp.WaitVisible(`select[name="h_centre"]`, chromedp.ByQuery),
-		chromedp.SetValue(`select[name="h_centre"]`, "your-city-value", chromedp.ByQuery),
-		chromedp.SetValue(`input[name="h_vrm"]`, "your-plate-value", chromedp.ByQuery),
-		// submit exam center and plate number
-		chromedp.Click(`button[id="submitBtn"]`, chromedp.ByQuery),
-
-		chromedp.WaitReady("body"),
-		chromedp.Value(`input[name="asd"]`, &todayStr, chromedp.ByQuery),
-	)
-
-	if err != nil {
-		return fmt.Errorf("failed to navigate to calendar: %w", err)
-	}
 	return nil
-}
-
-// FindAvailableSlots searches for available driving exam slots
-func (s *ChromeScraper) FindAvailableSlots() ([]pkg.Slot, error) {
-	if s.ctx == nil {
-		return nil, fmt.Errorf("browser not initialized: call InitBrowser() first")
-	}
-
-	if !s.isLoggedIn {
-		return nil, fmt.Errorf("not logged in: please call Login() first")
-	}
-
-	var slots []pkg.Slot
-
-	url := "https://rtd.mcw.gov.cy/WebPhase1/gui/dlcalendar/CancelRebookCalendar.jsp"
-
-	todayStr := ""
-
-	err := chromedp.Run(s.ctx,
-		chromedp.Navigate(url),
-		chromedp.WaitReady("body"),
-		chromedp.WaitVisible("button"),
-		// click next button to proceed with the default one exam
-		// TODO: add logic to select the needed exam if > 1 exam is available
-		chromedp.Click(`button`, chromedp.ByQuery),
-
-		chromedp.WaitReady("body"),
-		chromedp.WaitVisible(`select[name="h_centre"]`, chromedp.ByQuery),
-		chromedp.SetValue(`select[name="h_centre"]`, "your-city-value", chromedp.ByQuery),
-		chromedp.SetValue(`input[name="h_vrm"]`, "your-plate-value", chromedp.ByQuery),
-		// submit exam center and plate number
-		chromedp.Click(`button[id="submitBtn"]`, chromedp.ByQuery),
-
-		chromedp.WaitReady("body"),
-		chromedp.Value(`input[name="asd"]`, &todayStr, chromedp.ByQuery),
-	)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to navigate to calendar: %w", err)
-	}
-
-	// Parse date from format "02/04/2026" to "2026-04-02"
-	todayTime, err := time.Parse("02/01/2006", todayStr)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse date: %w", err)
-	}
-
-	// Mock slots for demonstration (TODO: Replace with actual scraping)
-	slots = append(slots, pkg.Slot{
-		Date:     todayTime.Format("2006-01-02"),
-	})
-
-	return slots, nil
 }

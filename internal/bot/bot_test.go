@@ -2,6 +2,7 @@ package bot
 
 import (
 	"testing"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/konstunn/cy-drive-exam-slot-finder/pkg"
@@ -34,9 +35,9 @@ func (m *mockScraper) Login(creds pkg.Credentials) error {
 	return nil
 }
 
-func (m *mockScraper) FindAvailableSlots() ([]pkg.Slot, error) {
-	return []pkg.Slot{
-		{Date: "2026-04-15", Time: "10:00", Location: "City Center", Type: "Driving Test"},
+func (m *mockScraper) FindAvailableSlots() ([]pkg.ExamTimeSlot, error) {
+	return []pkg.ExamTimeSlot{
+		{Time: time.Now(), ExamCenterCity: "Λεμεσού", LicenseCategory: "ΒΒ"},
 	}, nil
 }
 

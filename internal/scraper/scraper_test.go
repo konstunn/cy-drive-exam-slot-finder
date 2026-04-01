@@ -2,7 +2,6 @@ package scraper
 
 import (
 	"testing"
-	"time"
 
 	"github.com/konstunn/cy-drive-exam-slot-finder/pkg"
 	"github.com/stretchr/testify/suite"
@@ -43,47 +42,6 @@ func (suite *ScraperTestSuite) TestChromeScraper_Login() {
 	// Check that credentials are stored
 	suite.Equal("testuser", suite.scraper.creds.Username, "Username should be stored")
 	suite.Equal("testpass", suite.scraper.creds.Password, "Password should be stored")
-}
-
-// TestChromeScraper_FindAvailableSlots_WithoutLogin tests that scraping fails without login
-func (suite *ScraperTestSuite) TestChromeScraper_FindAvailableSlots_WithoutLogin() {
-	// Initialize browser first
-	err := suite.scraper.InitBrowser(5 * time.Second)
-	suite.NoError(err, "InitBrowser should succeed")
-	defer suite.scraper.Close()
-
-	_, err = suite.scraper.FindAvailableSlots()
-	suite.Error(err, "Expected error when calling FindAvailableSlots without login")
-
-	expectedError := "not logged in: please call Login() first"
-	suite.EqualError(err, expectedError, "Should return correct error message")
-}
-
-// TestChromeScraper_FindAvailableSlots_WithLogin tests scraping after login
-func (suite *ScraperTestSuite) TestChromeScraper_FindAvailableSlots_WithLogin() {
-	// Skip this test in CI environments or when Chrome is not available
-	suite.T().Skip("Skipping integration test that requires Chrome browser")
-
-	// Initialize browser
-	err := suite.scraper.InitBrowser(5 * time.Second)
-	suite.NoError(err, "InitBrowser should succeed")
-	defer suite.scraper.Close()
-
-	// Mock login by setting the flag (in real implementation, this would be done by actual login)
-	suite.scraper.isLoggedIn = true
-
-	slots, err := suite.scraper.FindAvailableSlots()
-	suite.NoError(err, "FindAvailableSlots should succeed when logged in")
-	suite.NotEmpty(slots, "Should return at least one slot")
-
-	// Check slot structure - using pkg.Slot type
-	for i, slot := range slots {
-		var _ pkg.Slot = slot // Ensure type compatibility
-		suite.NotEmpty(slot.Date, "Slot %d should have a date", i)
-		suite.NotEmpty(slot.Time, "Slot %d should have a time", i)
-		suite.NotEmpty(slot.Location, "Slot %d should have a location", i)
-		suite.NotEmpty(slot.Type, "Slot %d should have a type", i)
-	}
 }
 
 // TestScraperSuite runs the test suite
