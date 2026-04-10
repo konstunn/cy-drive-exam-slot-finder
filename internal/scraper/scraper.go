@@ -25,20 +25,23 @@ func NewChromeScraper() *ChromeScraper {
 
 // InitBrowser initializes the browser context for the scraper
 // Call this method once before performing any operations
-func (s *ChromeScraper) InitBrowser(timeout time.Duration) error {
+func (s *ChromeScraper) InitBrowser(timeout time.Duration, opts ...chromedp.ExecAllocatorOption) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 
 	// Create chromedp allocator with common options
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+	defaultOpts := []chromedp.ExecAllocatorOption{
 		chromedp.DisableGPU,
 		chromedp.NoDefaultBrowserCheck,
 		chromedp.Flag("headless", true),
 		chromedp.Flag("disable-background-timer-throttling", false),
 		chromedp.Flag("disable-backgrounding-occluded-windows", false),
 		chromedp.Flag("disable-renderer-backgrounding", false),
-	)
+	}
 
-	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, opts...)
+	// Append additional options
+	allOpts := append(defaultOpts, opts...)
+
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, allOpts...)
 	taskCtx, cancelTask := chromedp.NewContext(allocCtx, chromedp.WithLogf(log.Printf))
 
 	// Store context and combined cleanup function
