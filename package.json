@@ -1,0 +1,23 @@
+{
+  "name": "cy-drive-exam-slot-finder",
+  "version": "1.0.0",
+  "description": "A Telegram bot for finding available driving exam slots",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "jest",
+    "test-scraper": "node src/test-scraper.js"
+  },
+  "keywords": ["telegram", "bot", "scraper", "driving-exam"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "node-telegram-bot-api": "^0.66.0",
+    "puppeteer": "^22.0.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "nodemon": "^3.0.0"
+  }
+}
