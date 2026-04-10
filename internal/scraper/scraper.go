@@ -184,14 +184,6 @@ func (s *ChromeScraper) SubmitExamDetails(exam ExamDetails) error {
 	return nil
 }
 
-type GetTimeSlotsAction struct {}
-
-func (a *GetTimeSlotsAction) Do(context.Context) error {
-	// This is a placeholder for the actual implementation of retrieving time slots
-	// In a real implementation, you would interact with the page to extract available time slots
-	return nil
-}
-
 // GetTimeSlots retrieves available time slots
 func (s *ChromeScraper) GetTimeSlots() ([]time.Time, error) {
 	emptyTimes := []time.Time{}
@@ -215,6 +207,22 @@ func (s *ChromeScraper) GetTimeSlots() ([]time.Time, error) {
 	}
 
 	return timeSlots, nil
+}
+
+func (s *ChromeScraper) ClickTimeSlot(slot time.Time) error {
+	if err := s.checkInitializedLoggedIn(); err != nil {
+		return err
+	}
+	// this is how the time slots look like in the HTML, we need to find a way to click on the correct one based on the time
+	// <td width="80" height="40" background="/WebPhase1/images/drivercalendar/timeregular3.gif">
+	// <a style="text-decoration:none" href="CancelRebook5.jsp?examtime=13:00+&amp;nameDay=2&amp;calendarday=29/10/26&amp;h_centre=2&amp;licencecategory=ΒΒ&amp;vehiclevrm=NBH199&amp;lang=en&amp;h_old_centre=2" target="center">
+	// <h5>13:00</h5>
+	// </a>
+	// </td>
+
+	// TODO: pass recaptcha solution if needed, the captcha looks like this in the HTML:
+	// <div class="recaptcha-checkbox-border" role="presentation"></div>
+	return nil
 }
 
 func (s *ChromeScraper) checkInitializedLoggedIn() error {
