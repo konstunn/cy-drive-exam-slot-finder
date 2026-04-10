@@ -26,6 +26,10 @@ func NewChromeScraper() *ChromeScraper {
 // InitBrowser initializes the browser context for the scraper
 // Call this method once before performing any operations
 func (s *ChromeScraper) InitBrowser(timeout time.Duration, opts ...chromedp.ExecAllocatorOption) error {
+	if s.ctx != nil {
+		return fmt.Errorf("browser already initialized: call Close() before reinitializing")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 
 	// Create chromedp allocator with common options
