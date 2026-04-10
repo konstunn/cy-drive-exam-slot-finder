@@ -175,14 +175,17 @@ class ChromeScraper {
 
     try {
       logStep(`Submitting exam details on page at ${this.page.url()}`);
+      await this.logClickableControls(this.page, 'page');
 
       await this.page.waitForSelector('select[name="h_centre"]');
-      await this.page.select('select[name="h_centre"]', exam.centerCity);
+      await this.logSelectOptions(this.page, 'select[name="h_centre"]');
+      await this.selectByValueOrText(this.page, 'select[name="h_centre"]', exam.centerCity);
 
       await this.page.waitForSelector('input[name="h_vrm"]');
       await this.page.type('input[name="h_vrm"]', exam.carPlateNumber);
 
-      await this.clickAndWaitForNavigation(this.page, 'button[id="submitBtn"]');
+      logStep('Clicking submitBtn input and waiting for navigation');
+      await this.clickAndWaitForNavigation(this.page, 'input[type="button"][id="submitBtn"]');
     } catch (error) {
       throw new Error(`Failed to submit exam center and plate: ${error.message}`);
     }
@@ -211,6 +214,28 @@ class ChromeScraper {
       return timeSlots.map(slot => new Date()); // Placeholder
     } catch (error) {
       throw new Error(`Failed to get time slots: ${error.message}`);
+    }
+  }
+
+  /**
+   * Move the calendar to the next month.
+   */
+  async goToNextCalendarMonth() {
+    this.checkInitializedLoggedIn();
+
+    try {
+      logStep('Going to next calendar month');
+      await this.logCalendarNavigationControls(this.page);
+      await this.logCalendarMonth(this.page);
+
+      const nextMonthButton = await this.waitForCalendarNextMonthButton(this.page);
+      await nextMonthButton.click();
+
+      logStep('Clicked next calendar month');
+      await this.page.waitForFunction(() => document.readyState === 'complete');
+      await this.logCalendarMonth(this.page);
+    } catch (error) {
+      throw new Error(`Failed to go to next calendar month: ${error.message}`);
     }
   }
 
@@ -344,6 +369,133 @@ class ChromeScraper {
     });
 
     logStep(`Clickable controls in ${label}: ${controls.length ? controls.join(', ') : '<none>'}`);
+  }
+
+  /**
+   * Log select options for debugging form values.
+   * @param {import('puppeteer').Frame|import('puppeteer').Page} context
+   * @param {string} selector
+   */
+  async logSelectOptions(context, selector) {
+    const options = await context.evaluate(selectSelector => {
+      const select = document.querySelector(selectSelector);
+      if (!select) {
+        return null;
+      }
+
+      return Array.from(select.options).map(option => {
+        return `value=${option.value} text=${option.textContent.trim()}`;
+      });
+    }, selector);
+
+    logStep(`Options for ${selector}: ${options ? options.join(', ') : '<select not found>'}`);
+  }
+
+  /**
+   * Select an option by value first, then by visible text.
+   * @param {import('puppeteer').Frame|import('puppeteer').Page} context
+   * @param {string} selector
+   * @param {string} valueOrText
+   */
+  async selectByValueOrText(context, selector, valueOrText) {
+    const selectedValue = await context.evaluate((selectSelector, expected) => {
+      const select = document.querySelector(selectSelector);
+      if (!select) {
+        return null;
+      }
+
+      const expectedText = String(expected).trim();
+      const option = Array.from(select.options).find(item => {
+        return item.value === expectedText || item.textContent.trim() === expectedText;
+      });
+
+      if (!option) {
+        return null;
+      }
+
+      select.value = option.value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return option.value;
+    }, selector, valueOrText);
+
+    if (!selectedValue) {
+      throw new Error(`Could not find option "${valueOrText}" for ${selector}`);
+    }
+
+    logStep(`Selected ${selector} option value=${selectedValue}`);
+  }
+
+  /**
+   * Log calendar navigation images for debugging.
+   * @param {import('puppeteer').Frame|import('puppeteer').Page} context
+   */
+  async logCalendarNavigationControls(context) {
+    const controls = await context.evaluate(() => {
+      return Array.from(document.querySelectorAll('img')).map(image => {
+        const title = image.getAttribute('title') || '<no title>';
+        const src = image.getAttribute('src') || '<no src>';
+        const onclick = image.getAttribute('onclick') || '<no onclick>';
+
+        return `img title=${title} src=${src} onclick=${onclick}`;
+      });
+    });
+
+    logStep(`Calendar image controls: ${controls.length ? controls.join(', ') : '<none>'}`);
+  }
+
+  /**
+   * Find the calendar next-month image button.
+   * @param {import('puppeteer').Frame|import('puppeteer').Page} context
+   */
+  async waitForCalendarNextMonthButton(context) {
+    await context.waitForFunction(() => {
+      return Array.from(document.querySelectorAll('img')).some(image => {
+        const title = image.getAttribute('title') || '';
+        const src = image.getAttribute('src') || '';
+        const onclick = image.getAttribute('onclick') || '';
+
+        return title.trim() === 'Next month.'
+          || src.includes('dlcalendar_nextmonth_black.gif')
+          || onclick.includes('addMonths(event, 1)');
+      });
+    });
+
+    return context.evaluateHandle(() => {
+      return Array.from(document.querySelectorAll('img')).find(image => {
+        const title = image.getAttribute('title') || '';
+        const src = image.getAttribute('src') || '';
+        const onclick = image.getAttribute('onclick') || '';
+
+        return title.trim() === 'Next month.'
+          || src.includes('dlcalendar_nextmonth_black.gif')
+          || onclick.includes('addMonths(event, 1)');
+      });
+    });
+  }
+
+  /**
+   * Get the current calendar month label.
+   * @param {import('puppeteer').Frame|import('puppeteer').Page} context
+   * @returns {Promise<string|null>}
+   */
+  async getCalendarMonth(context = this.page) {
+    return context.evaluate(() => {
+      const header = document.querySelector('#calendarHeader');
+      if (!header) {
+        return null;
+      }
+
+      return header.textContent.replace(/\s+/g, ' ').trim();
+    });
+  }
+
+  /**
+   * Log the current calendar month label.
+   * @param {import('puppeteer').Frame|import('puppeteer').Page} context
+   */
+  async logCalendarMonth(context = this.page) {
+    const month = await this.getCalendarMonth(context);
+    logStep(`Calendar month: ${month || '<not found>'}`);
   }
 
   /**
