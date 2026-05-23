@@ -201,17 +201,26 @@ class ChromeScraper {
     try {
       logStep(`Getting time slots from page at ${this.page.url()}`);
 
-      await this.page.waitForSelector('body');
+      // Wait for the calendar or slot container to appear; selector may vary by page
+      // If `.time-slot` isn't present yet, wait a short time for it to arrive
+      try {
+        await this.page.waitForSelector('.time-slot', { timeout: 3000 });
+      } catch (e) {
+        // it's OK if there are no time slots — we'll return an empty array
+      }
 
-      const timeSlots = await this.page.evaluate(() => {
-        // This selector needs to be adjusted based on the actual HTML structure
+      const timeSlots = await this.retryEvaluate(this.page, () => {
         const slots = Array.from(document.querySelectorAll('.time-slot'));
         return slots.map(slot => slot.textContent.trim());
       });
 
-      // Convert string times to Date objects
-      // This is a placeholder - actual implementation depends on the HTML structure
-      return timeSlots.map(slot => new Date()); // Placeholder
+      // Convert string times to Date objects if possible, otherwise return raw strings
+      const parsed = timeSlots.map(ts => {
+        const d = new Date(ts);
+        return isNaN(d.getTime()) ? ts : d;
+      });
+
+      return parsed;
     } catch (error) {
       throw new Error(`Failed to get time slots: ${error.message}`);
     }
@@ -226,14 +235,34 @@ class ChromeScraper {
     try {
       logStep('Going to next calendar month');
       await this.logCalendarNavigationControls(this.page);
-      await this.logCalendarMonth(this.page);
+      await this.logCurrentCalendarMonth(this.page);
 
-      const nextMonthButton = await this.waitForCalendarNextMonthButton(this.page);
-      await nextMonthButton.click();
+      const nextMonthButtonHandle = await this.waitForCalendarNextMonthButton(this.page);
 
-      logStep('Clicked next calendar month');
-      await this.page.waitForFunction(() => document.readyState === 'complete');
-      await this.logCalendarMonth(this.page);
+      // get current month label to detect change
+      const before = await this.getCalendarMonth(this.page);
+
+      // Click and wait for calendar header to change
+      await nextMonthButtonHandle.asElement().click();
+
+      // Wait until calendar header text changes (or timeout)
+      try {
+        await this.page.waitForFunction((prev) => {
+          const header = document.querySelector('#calendarHeader');
+          if (!header) return false;
+          return header.textContent.replace(/\s+/g, ' ').trim() !== prev;
+        }, {}, before);
+      } catch (e) {
+        // fallback to waiting for network idle or complete state
+        try {
+          await this.page.waitForFunction(() => document.readyState === 'complete', { timeout: 5000 });
+        } catch (_) {
+          // ignore
+        }
+      }
+
+      logStep('Moved to next calendar month (attempted)');
+      await this.logCurrentCalendarMonth(this.page);
     } catch (error) {
       throw new Error(`Failed to go to next calendar month: ${error.message}`);
     }
@@ -426,6 +455,31 @@ class ChromeScraper {
   }
 
   /**
+   * Retry a page/frame evaluate when transient navigation destroys the execution context.
+   * @param {import('puppeteer').Page|import('puppeteer').Frame} context
+   * @param {Function} fn
+   * @param  {...any} args
+   */
+  async retryEvaluate(context, fn, ...args) {
+    const maxAttempts = 3;
+    const delay = ms => new Promise(r => setTimeout(r, ms));
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await context.evaluate(fn, ...args);
+      } catch (err) {
+        const msg = (err && err.message) || '';
+        if (msg.includes('Execution context was destroyed') || msg.includes('Protocol error') || attempt === maxAttempts) {
+          if (attempt === maxAttempts) throw err;
+          await delay(500 * attempt);
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
+  /**
    * Log calendar navigation images for debugging.
    * @param {import('puppeteer').Frame|import('puppeteer').Page} context
    */
@@ -479,12 +533,16 @@ class ChromeScraper {
    * @returns {Promise<string|null>}
    */
   async getCalendarMonth(context = this.page) {
-    return context.evaluate(() => {
-      const header = document.querySelector('#calendarHeader');
-      if (!header) {
-        return null;
-      }
+    try {
+      await context.waitForSelector('#calendarHeader', { timeout: 5000 });
+    } catch (e) {
+      // no header found, return null
+      return null;
+    }
 
+    return this.retryEvaluate(context, () => {
+      const header = document.querySelector('#calendarHeader');
+      if (!header) return null;
       return header.textContent.replace(/\s+/g, ' ').trim();
     });
   }
@@ -493,7 +551,7 @@ class ChromeScraper {
    * Log the current calendar month label.
    * @param {import('puppeteer').Frame|import('puppeteer').Page} context
    */
-  async logCalendarMonth(context = this.page) {
+  async logCurrentCalendarMonth(context = this.page) {
     const month = await this.getCalendarMonth(context);
     logStep(`Calendar month: ${month || '<not found>'}`);
   }
