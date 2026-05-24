@@ -4,8 +4,39 @@ const TOP_FRAME_NAME = 'top';
 const TOP_FRAME_URL_PART = 'TPRTDLogo.jsp';
 const WAIT_UNTIL = 'domcontentloaded';
 
+const LOG_LEVELS = {
+  ERROR: 0,
+  WARN: 1,
+  INFO: 2,
+  DEBUG: 3
+};
+
+let currentLogLevel = LOG_LEVELS.INFO;
+
+/**
+ * Set the global log level for all scraper instances.
+ * @param {string} level - One of 'ERROR', 'WARN', 'INFO', 'DEBUG'
+ */
+function setLogLevel(level) {
+  if (LOG_LEVELS[level] !== undefined) {
+    currentLogLevel = LOG_LEVELS[level];
+  }
+}
+
+/**
+ * Log a message at a specific level.
+ * @param {string} message
+ * @param {string} level - One of 'ERROR', 'WARN', 'INFO', 'DEBUG'
+ */
+function log(message, level = 'INFO') {
+  const messageLevel = LOG_LEVELS[level] || LOG_LEVELS.INFO;
+  if (messageLevel <= currentLogLevel) {
+    console.log(`[scraper:${level}] ${message}`);
+  }
+}
+
 function logStep(message) {
-  console.log(`[scraper] ${message}`);
+  log(message, 'DEBUG');
 }
 
 /**
@@ -28,6 +59,15 @@ class ChromeScraper {
     if (this.browser) {
       throw new Error('Browser already initialized: call close() before reinitializing');
     }
+    // allow passing custom navDelayMs and logLevel in options; remove them before passing to puppeteer
+    const { navDelayMs = 0, logLevel = 'INFO', ...launchOptions } = options;
+    this.navDelayMs = Number(navDelayMs) || 0;
+    
+    // Set the global log level for all scraper operations
+    if (logLevel) {
+      setLogLevel(logLevel);
+      log(`Log level set to ${logLevel}`, 'DEBUG');
+    }
 
     this.browser = await puppeteer.launch({
       headless: true,
@@ -41,11 +81,21 @@ class ChromeScraper {
         '--single-process',
         '--disable-gpu'
       ],
-      ...options
+      ...launchOptions
     });
 
     this.page = await this.browser.newPage();
     this.page.setDefaultTimeout(timeout);
+  }
+
+  /**
+   * Small helper to wait before navigation-triggering actions when configured.
+   */
+  async preNavDelay() {
+    if (this.navDelayMs && this.navDelayMs > 0) {
+      log(`Waiting ${this.navDelayMs}ms before navigation`, 'DEBUG');
+      await new Promise(r => setTimeout(r, this.navDelayMs));
+    }
   }
 
   /**
@@ -93,11 +143,12 @@ class ChromeScraper {
       await this.typeNamedInput(frame, 'h_PASSWORD', creds.password);
 
       logStep('Clicking login submit and waiting for navigation');
+      await this.preNavDelay();
       await this.clickAndWaitForNavigation(frame, 'input[type="submit"][name="h_LOGIN"]');
       logStep('Login navigation completed');
 
       this.isLoggedIn = true;
-      console.log('Successfully logged in to driving exam system');
+      log('Successfully logged in to driving exam system', 'INFO');
     } catch (error) {
       throw new Error(`Login failed: ${error.message}`);
     }
@@ -112,6 +163,7 @@ class ChromeScraper {
     const url = 'https://rtd.mcw.gov.cy/WebPhase1/gui/dlcalendar/CancelRebookCalendar.jsp';
 
     try {
+      await this.preNavDelay();
       await this.page.goto(url, { waitUntil: WAIT_UNTIL });
     } catch (error) {
       throw new Error(`Failed to navigate to calendar: ${error.message}`);
@@ -132,6 +184,7 @@ class ChromeScraper {
       logStep('Waiting for existing exam Next button');
       const nextButton = await this.waitForInputButtonByValue(this.page, 'Next');
       logStep('Clicking existing exam Next button and waiting for navigation');
+      await this.preNavDelay();
       await this.clickElementAndWaitForNavigation(this.page, nextButton);
       logStep('Existing exam navigation completed');
     } catch (error) {
@@ -185,6 +238,7 @@ class ChromeScraper {
       await this.page.type('input[name="h_vrm"]', exam.carPlateNumber);
 
       logStep('Clicking submitBtn input and waiting for navigation');
+      await this.preNavDelay();
       await this.clickAndWaitForNavigation(this.page, 'input[type="button"][id="submitBtn"]');
     } catch (error) {
       throw new Error(`Failed to submit exam center and plate: ${error.message}`);
@@ -209,18 +263,86 @@ class ChromeScraper {
         // it's OK if there are no time slots — we'll return an empty array
       }
 
-      const timeSlots = await this.retryEvaluate(this.page, () => {
-        const slots = Array.from(document.querySelectorAll('.time-slot'));
-        return slots.map(slot => slot.textContent.trim());
+      // Gather raw slot nodes that have a calendar background image (all color variants)
+      const rawSlots = await this.retryEvaluate(this.page, () => {
+        const tds = Array.from(document.querySelectorAll('td[background*="/WebPhase1/images/drivercalendar/"]'));
+        return tds.map(td => {
+          const bg = td.getAttribute('background') || '';
+          const h5 = td.querySelector('h5');
+          const timeText = h5 ? h5.textContent.trim() : null;
+          const a = td.querySelector('a');
+          const href = a ? a.getAttribute('href') : null;
+          return { background: bg, timeText, href };
+        });
       });
 
-      // Convert string times to Date objects if possible, otherwise return raw strings
-      const parsed = timeSlots.map(ts => {
-        const d = new Date(ts);
-        return isNaN(d.getTime()) ? ts : d;
-      });
+      // Parse each raw slot into { datetime, available }
+      const slots = [];
 
-      return parsed;
+      // Get current calendar header (may include year) to help with parsing
+      const header = await this.getCalendarMonth();
+
+      for (const s of rawSlots) {
+        const bg = (s.background || '').toLowerCase();
+        const available = !bg.includes('red');
+
+        let datetime = null;
+
+        // Prefer explicit calendarday + examtime from href if present
+        if (s.href) {
+          try {
+            const url = new URL(s.href, this.page.url());
+            const params = url.searchParams;
+            const examtime = params.get('examtime') || params.get('time') || null;
+            const calendarday = params.get('calendarday') || params.get('calendardate') || null;
+
+            if (calendarday && examtime) {
+              // calendarday expected as DD/MM/YY or DD/MM/YYYY
+              const parts = calendarday.split('/').map(p => p.trim());
+              if (parts.length === 3) {
+                let day = parseInt(parts[0], 10);
+                let month = parseInt(parts[1], 10) - 1;
+                let year = parseInt(parts[2], 10);
+                if (year < 100) year += 2000;
+
+                // examtime might include trailing + or spaces
+                const timeMatch = String(examtime).match(/(\d{1,2}:\d{2})/);
+                if (timeMatch) {
+                  const [hh, mm] = timeMatch[1].split(':').map(n => parseInt(n, 10));
+                  datetime = new Date(year, month, day, hh, mm);
+                } else {
+                  datetime = new Date(year, month, day);
+                }
+              }
+            }
+          } catch (e) {
+            // ignore parse errors and fall back
+          }
+        }
+
+        // If we couldn't parse a full date, try to parse timeText and guess date using header/year
+        if (!datetime && s.timeText) {
+          const timeMatch = String(s.timeText).match(/(\d{1,2}:\d{2})/);
+          if (timeMatch) {
+            const [hh, mm] = timeMatch[1].split(':').map(n => parseInt(n, 10));
+            // try to derive year from header
+            let year = (new Date()).getFullYear();
+            const yearMatch = String(header || '').match(/(20\d{2}|\d{4}|\d{2})/);
+            if (yearMatch) {
+              let y = parseInt(yearMatch[1], 10);
+              if (y < 100) y += 2000;
+              if (y >= 1970) year = y;
+            }
+            // No day information available — set to today's date with parsed time (caller can adjust)
+            const today = new Date();
+            datetime = new Date(year, today.getMonth(), today.getDate(), hh, mm);
+          }
+        }
+
+        slots.push({ datetime, available });
+      }
+
+      return slots;
     } catch (error) {
       throw new Error(`Failed to get time slots: ${error.message}`);
     }
@@ -243,6 +365,7 @@ class ChromeScraper {
       const before = await this.getCalendarMonth(this.page);
 
       // Click and wait for calendar header to change
+      await this.preNavDelay();
       await nextMonthButtonHandle.asElement().click();
 
       // Wait until calendar header text changes (or timeout)
@@ -614,3 +737,4 @@ class ChromeScraper {
 }
 
 module.exports = ChromeScraper;
+module.exports.setLogLevel = setLogLevel;
