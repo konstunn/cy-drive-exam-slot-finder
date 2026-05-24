@@ -349,6 +349,15 @@ class ChromeScraper {
   }
 
   /**
+   * Return only available time slots (filters result of getTimeSlots)
+   * @returns {Promise<Array<{datetime: Date|null, available: boolean}>>}
+   */
+  async getAvailableTimeSlots() {
+    const slots = await this.getTimeSlots();
+    return Array.isArray(slots) ? slots.filter(s => s && s.available) : [];
+  }
+
+  /**
    * Move the calendar to the next month.
    */
   async goToNextCalendarMonth() {
