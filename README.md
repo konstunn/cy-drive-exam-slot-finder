@@ -23,13 +23,21 @@ This project follows a modular architecture with separated concerns:
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 26 LTS, version 26.13.0 or newer within 26.x (pinned in `.tool-versions`)
 - npm or yarn
 
 ### Installation
 
+With asdf, install the pinned Node.js version from the project root:
+
 ```bash
-npm install
+asdf install
+```
+
+Then install the dependencies:
+
+```bash
+npm ci
 ```
 
 ### Environment Variables
@@ -77,11 +85,32 @@ npm run dev
 
 ### Test Scraper
 
-To test the scraper functionality independently:
+One-time setup from the project root:
+
+```bash
+npm ci
+cp .env.example .env
+```
+
+Fill in these values in `.env`:
+
+```dotenv
+SCRAPER_USERNAME="your_username"
+SCRAPER_PASSWORD="your_password"
+SCRAPER_CITY_CENTER="your_city_center"
+SCRAPER_CAR_PLATE="your_car_plate"
+```
+
+For every subsequent run:
 
 ```bash
 npm run test-scraper
 ```
+
+This command automatically loads `.env`; no `export` or `source` commands are
+needed. Existing environment variables take precedence over `.env` values.
+The Telegram token is not required for this script. It opens a visible browser,
+so run it in a graphical desktop session. The `.env` file is ignored by Git.
 
 ### Environment Setup
 
@@ -106,7 +135,7 @@ The bot currently supports:
 1. Define types in `src/types.js` using JSDoc
 2. Implement business logic in appropriate `src/` module
 3. Update `src/index.js` for dependency injection
-4. Add tests following standard Jest patterns
+4. Add tests in `tests/` using the built-in `node:test` runner
 
 ### Testing
 
