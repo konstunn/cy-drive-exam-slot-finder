@@ -20,7 +20,12 @@ async function main() {
 
   try {
     console.log('Initializing browser...');
-    await scraper.initBrowser(100*1e3, { headless: false }); // 10 seconds, not headless for testing
+    const debug = process.env.SCRAPER_DEBUG !== '0';
+    await scraper.initBrowser(100 * 1e3, {
+      headless: false,
+      debug,
+      logLevel: debug ? 'DEBUG' : 'INFO'
+    });
 
     console.log('Logging in...');
     await scraper.login({ username, password });
@@ -65,6 +70,7 @@ async function main() {
     console.log('Scraper test completed successfully!');
   } catch (error) {
     console.error('Error:', error);
+    process.exitCode = 1;
   } finally {
     await scraper.close();
   }

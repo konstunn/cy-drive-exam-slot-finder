@@ -1,4 +1,5 @@
 const puppeteer = require('puppeteer');
+const ScraperDebug = require('./scraper-debug');
 
 const TOP_FRAME_NAME = 'top';
 const TOP_FRAME_URL_PART = 'TPRTDLogo.jsp';
@@ -48,6 +49,36 @@ class ChromeScraper {
     this.isLoggedIn = false;
     this.browser = null;
     this.page = null;
+    this.debug = this.createDebugRecorder();
+  }
+
+  createDebugRecorder(enabled = process.env.SCRAPER_DEBUG === '1',
+    rootDir = process.env.SCRAPER_DEBUG_DIR || 'debug') {
+    return new ScraperDebug({
+      enabled, rootDir,
+      getSecrets: () => [this.creds?.username, this.creds?.password],
+      onDirectory: directory => log(`Debug files: ${directory}`, 'INFO'),
+      onSnapshot: directory => logStep(`HTML snapshot: ${directory}`),
+      onWarning: message => log(message, 'WARN')
+    });
+  }
+
+  async runStep(step, action, details = {}) {
+    await this.debug.capture(this.page, step, 'before', details);
+    const started = Date.now();
+    try {
+      const result = await action();
+      await this.debug.capture(this.page, step, 'after', {
+        ...details, durationMs: Date.now() - started
+      });
+      return result;
+    } catch (error) {
+      await this.debug.capture(this.page, step, 'error', {
+        ...details, durationMs: Date.now() - started,
+        error: { name: error?.name || 'Error', message: error?.message || String(error), stack: error?.stack }
+      });
+      throw error;
+    }
   }
 
   /**
@@ -59,32 +90,37 @@ class ChromeScraper {
     if (this.browser) {
       throw new Error('Browser already initialized: call close() before reinitializing');
     }
-    // allow passing custom navDelayMs and logLevel in options; remove them before passing to puppeteer
-    const { navDelayMs = 0, logLevel = 'INFO', ...launchOptions } = options;
+    // Scraper options must not be forwarded to Puppeteer.
+    const { navDelayMs = 0, logLevel = 'INFO',
+      debug = process.env.SCRAPER_DEBUG === '1',
+      debugDir = process.env.SCRAPER_DEBUG_DIR || 'debug', ...launchOptions } = options;
+    this.debug = this.createDebugRecorder(debug, debugDir);
     this.navDelayMs = Number(navDelayMs) || 0;
-    
+
     // Set the global log level for all scraper operations
     if (logLevel) {
       setLogLevel(logLevel);
       log(`Log level set to ${logLevel}`, 'DEBUG');
     }
 
-    this.browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu'
-      ],
-      ...launchOptions
-    });
+    return this.runStep('init-browser', async () => {
+      this.browser = await puppeteer.launch({
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--disable-gpu'
+        ],
+        ...launchOptions
+      });
 
-    this.page = await this.browser.newPage();
-    this.page.setDefaultTimeout(timeout);
+      this.page = await this.browser.newPage();
+      this.page.setDefaultTimeout(timeout);
+    });
   }
 
   /**
@@ -101,12 +137,14 @@ class ChromeScraper {
    * Close the browser and clean up resources
    */
   async close() {
-    if (this.browser) {
-      await this.browser.close();
-      this.browser = null;
-      this.page = null;
-      this.isLoggedIn = false;
-    }
+    return this.runStep('close', async () => {
+      if (this.browser) {
+        await this.browser.close();
+        this.browser = null;
+        this.page = null;
+        this.isLoggedIn = false;
+      }
+    });
   }
 
   /**
@@ -114,81 +152,87 @@ class ChromeScraper {
    * @param {Credentials} creds
    */
   async login(creds) {
-    if (!this.page) {
-      throw new Error('Browser not initialized: call initBrowser() first');
-    }
-
     this.creds = creds;
+    return this.runStep('login', async () => {
+      if (!this.page) {
+        throw new Error('Browser not initialized: call initBrowser() first');
+      }
 
-    const loginURL = 'https://rtd.mcw.gov.cy';
+      const loginURL = 'https://rtd.mcw.gov.cy';
 
-    try {
-      logStep(`Opening login page: ${loginURL}`);
-      await this.page.goto(loginURL, { waitUntil: WAIT_UNTIL });
-      logStep('Login page loaded');
+      try {
+        logStep(`Opening login page: ${loginURL}`);
+        await this.runStep('open-login-page',
+          () => this.page.goto(loginURL, { waitUntil: WAIT_UNTIL }), { targetUrl: loginURL });
+        logStep('Login page loaded');
 
-      const frame = await this.getTopFrame();
-      logStep(`Using frame "${frame.name()}" at ${frame.url()}`);
-      await this.logFrameInputs(frame);
+        const frame = await this.getTopFrame();
+        logStep(`Using frame "${frame.name()}" at ${frame.url()}`);
+        await this.logFrameInputs(frame);
 
-      logStep('Waiting for username input');
-      await this.waitForNamedInput(frame, 'h_USERNAME');
-      logStep('Typing username');
-      await this.typeNamedInput(frame, 'h_USERNAME', creds.username);
+        logStep('Waiting for username input');
+        await this.waitForNamedInput(frame, 'h_USERNAME');
+        logStep('Typing username');
+        await this.typeNamedInput(frame, 'h_USERNAME', creds.username);
 
-      logStep('Waiting for password input');
-      await this.waitForNamedInput(frame, 'h_PASSWORD');
-      logStep('Typing password');
-      await this.typeNamedInput(frame, 'h_PASSWORD', creds.password);
+        logStep('Waiting for password input');
+        await this.waitForNamedInput(frame, 'h_PASSWORD');
+        logStep('Typing password');
+        await this.typeNamedInput(frame, 'h_PASSWORD', creds.password);
 
-      logStep('Clicking login submit and waiting for navigation');
-      await this.preNavDelay();
-      await this.clickAndWaitForNavigation(frame, 'input[type="submit"][name="h_LOGIN"]');
-      logStep('Login navigation completed');
+        logStep('Clicking login submit and waiting for navigation');
+        await this.preNavDelay();
+        await this.clickAndWaitForNavigation(frame, 'input[type="submit"][name="h_LOGIN"]');
+        logStep('Login navigation completed');
 
-      this.isLoggedIn = true;
-      log('Successfully logged in to driving exam system', 'INFO');
-    } catch (error) {
-      throw new Error(`Login failed: ${error.message}`);
-    }
+        this.isLoggedIn = true;
+        log('Successfully logged in to driving exam system', 'INFO');
+      } catch (error) {
+        throw new Error(`Login failed: ${error.message}`);
+      }
+    });
   }
 
   /**
    * Navigate to the rebooking calendar page
    */
   async navigateToCancelRebook() {
-    this.checkInitializedLoggedIn();
+    return this.runStep('navigate-to-cancel-rebook', async () => {
+      this.checkInitializedLoggedIn();
 
-    const url = 'https://rtd.mcw.gov.cy/WebPhase1/gui/dlcalendar/CancelRebookCalendar.jsp';
+      const url = 'https://rtd.mcw.gov.cy/WebPhase1/gui/dlcalendar/CancelRebookCalendar.jsp';
 
-    try {
-      await this.preNavDelay();
-      await this.page.goto(url, { waitUntil: WAIT_UNTIL });
-    } catch (error) {
-      throw new Error(`Failed to navigate to calendar: ${error.message}`);
-    }
+      try {
+        await this.preNavDelay();
+        await this.page.goto(url, { waitUntil: WAIT_UNTIL });
+      } catch (error) {
+        throw new Error(`Failed to navigate to calendar: ${error.message}`);
+      }
+    }, { targetUrl: 'https://rtd.mcw.gov.cy/WebPhase1/gui/dlcalendar/CancelRebookCalendar.jsp' });
   }
 
   /**
    * Choose the existing exam to proceed with rebooking
    */
   async chooseExistingExam() {
-    this.checkInitializedLoggedIn();
+    return this.runStep('choose-existing-exam', async () => {
+      this.checkInitializedLoggedIn();
 
-    try {
-      logStep('Choosing existing exam');
-      logStep(`Using page at ${this.page.url()}`);
-      await this.logClickableControls(this.page, 'page');
+      try {
+        logStep('Choosing existing exam');
+        logStep(`Using page at ${this.page.url()}`);
+        await this.logClickableControls(this.page, 'page');
 
-      logStep('Waiting for existing exam Next button');
-      const nextButton = await this.waitForInputButtonByValue(this.page, 'Next');
-      logStep('Clicking existing exam Next button and waiting for navigation');
-      await this.preNavDelay();
-      await this.clickElementAndWaitForNavigation(this.page, nextButton);
-      logStep('Existing exam navigation completed');
-    } catch (error) {
-      throw new Error(`Failed to choose existing exam: ${error.message}`);
-    }
+        logStep('Waiting for existing exam Next button');
+        const nextButton = await this.waitForInputButtonByValue(this.page, 'Next');
+        logStep('Clicking existing exam Next button and waiting for navigation');
+        await this.preNavDelay();
+        await this.clickElementAndWaitForNavigation(this.page, nextButton);
+        logStep('Existing exam navigation completed');
+      } catch (error) {
+        throw new Error(`Failed to choose existing exam: ${error.message}`);
+      }
+    }, { expected: 'input[type=button] with value Next' });
   }
 
   /**
@@ -196,22 +240,24 @@ class ChromeScraper {
    * @returns {Promise<string[]>}
    */
   async getExamCityCenters() {
-    this.checkInitializedLoggedIn();
+    return this.runStep('get-exam-city-centers', async () => {
+      this.checkInitializedLoggedIn();
 
-    try {
-      logStep(`Getting exam city centers from page at ${this.page.url()}`);
+      try {
+        logStep(`Getting exam city centers from page at ${this.page.url()}`);
 
-      await this.page.waitForSelector('select[name="h_centre"]');
+        await this.page.waitForSelector('select[name="h_centre"]');
 
-      const centers = await this.page.evaluate(() => {
-        const options = Array.from(document.querySelectorAll('select[name="h_centre"] option'));
-        return options.map(option => option.textContent.trim());
-      });
+        const centers = await this.page.evaluate(() => {
+          const options = Array.from(document.querySelectorAll('select[name="h_centre"] option'));
+          return options.map(option => option.textContent.trim());
+        });
 
-      return centers;
-    } catch (error) {
-      throw new Error(`Failed to get exam city centers: ${error.message}`);
-    }
+        return centers;
+      } catch (error) {
+        throw new Error(`Failed to get exam city centers: ${error.message}`);
+      }
+    }, { selector: 'select[name="h_centre"]' });
   }
 
   /**
@@ -219,29 +265,31 @@ class ChromeScraper {
    * @param {ExamDetails} exam
    */
   async submitExamDetails(exam) {
-    this.checkInitializedLoggedIn();
+    return this.runStep('submit-exam-details', async () => {
+      this.checkInitializedLoggedIn();
 
-    if (!exam.centerCity || !exam.carPlateNumber) {
-      throw new Error('Center city and car plate number must be provided');
-    }
+      if (!exam.centerCity || !exam.carPlateNumber) {
+        throw new Error('Center city and car plate number must be provided');
+      }
 
-    try {
-      logStep(`Submitting exam details on page at ${this.page.url()}`);
-      await this.logClickableControls(this.page, 'page');
+      try {
+        logStep(`Submitting exam details on page at ${this.page.url()}`);
+        await this.logClickableControls(this.page, 'page');
 
-      await this.page.waitForSelector('select[name="h_centre"]');
-      await this.logSelectOptions(this.page, 'select[name="h_centre"]');
-      await this.selectByValueOrText(this.page, 'select[name="h_centre"]', exam.centerCity);
+        await this.page.waitForSelector('select[name="h_centre"]');
+        await this.logSelectOptions(this.page, 'select[name="h_centre"]');
+        await this.selectByValueOrText(this.page, 'select[name="h_centre"]', exam.centerCity);
 
-      await this.page.waitForSelector('input[name="h_vrm"]');
-      await this.page.type('input[name="h_vrm"]', exam.carPlateNumber);
+        await this.page.waitForSelector('input[name="h_vrm"]');
+        await this.page.type('input[name="h_vrm"]', exam.carPlateNumber);
 
-      logStep('Clicking submitBtn input and waiting for navigation');
-      await this.preNavDelay();
-      await this.clickAndWaitForNavigation(this.page, 'input[type="button"][id="submitBtn"]');
-    } catch (error) {
-      throw new Error(`Failed to submit exam center and plate: ${error.message}`);
-    }
+        logStep('Clicking submitBtn input and waiting for navigation');
+        await this.preNavDelay();
+        await this.clickAndWaitForNavigation(this.page, 'input[type="button"][id="submitBtn"]');
+      } catch (error) {
+        throw new Error(`Failed to submit exam center and plate: ${error.message}`);
+      }
+    }, { selector: 'input[type="button"][id="submitBtn"]' });
   }
 
   /**
@@ -249,102 +297,104 @@ class ChromeScraper {
    * @returns {Promise<Date[]>}
    */
   async getTimeSlots() {
-    this.checkInitializedLoggedIn();
+    return this.runStep('get-time-slots', async () => {
+      this.checkInitializedLoggedIn();
 
-    try {
-      logStep(`Getting time slots from page at ${this.page.url()}`);
-
-      // Wait for the calendar or slot container to appear; selector may vary by page
-      // If `.time-slot` isn't present yet, wait a short time for it to arrive
       try {
-        await this.page.waitForSelector('.time-slot', { timeout: 3000 });
-      } catch (e) {
-        // it's OK if there are no time slots — we'll return an empty array
-      }
+        logStep(`Getting time slots from page at ${this.page.url()}`);
 
-      // Gather raw slot nodes that have a calendar background image (all color variants)
-      const rawSlots = await this.retryEvaluate(this.page, () => {
-        const tds = Array.from(document.querySelectorAll('td[background*="/WebPhase1/images/drivercalendar/"]'));
-        return tds.map(td => {
-          const bg = td.getAttribute('background') || '';
-          const h5 = td.querySelector('h5');
-          const timeText = h5 ? h5.textContent.trim() : null;
-          const a = td.querySelector('a');
-          const href = a ? a.getAttribute('href') : null;
-          return { background: bg, timeText, href };
+        // Wait for the calendar or slot container to appear; selector may vary by page
+        // If `.time-slot` isn't present yet, wait a short time for it to arrive
+        try {
+          await this.page.waitForSelector('.time-slot', { timeout: 3000 });
+        } catch (e) {
+          // it's OK if there are no time slots — we'll return an empty array
+        }
+
+        // Gather raw slot nodes that have a calendar background image (all color variants)
+        const rawSlots = await this.retryEvaluate(this.page, () => {
+          const tds = Array.from(document.querySelectorAll('td[background*="/WebPhase1/images/drivercalendar/"]'));
+          return tds.map(td => {
+            const bg = td.getAttribute('background') || '';
+            const h5 = td.querySelector('h5');
+            const timeText = h5 ? h5.textContent.trim() : null;
+            const a = td.querySelector('a');
+            const href = a ? a.getAttribute('href') : null;
+            return { background: bg, timeText, href };
+          });
         });
-      });
 
-      // Parse each raw slot into { datetime, available }
-      const slots = [];
+        // Parse each raw slot into { datetime, available }
+        const slots = [];
 
-      // Get current calendar header (may include year) to help with parsing
-      const header = await this.getCalendarMonth();
+        // Get current calendar header (may include year) to help with parsing
+        const header = await this.getCalendarMonth();
 
-      for (const s of rawSlots) {
-        const bg = (s.background || '').toLowerCase();
-        const available = !bg.includes('red');
+        for (const s of rawSlots) {
+          const bg = (s.background || '').toLowerCase();
+          const available = !bg.includes('red');
 
-        let datetime = null;
+          let datetime = null;
 
-        // Prefer explicit calendarday + examtime from href if present
-        if (s.href) {
-          try {
-            const url = new URL(s.href, this.page.url());
-            const params = url.searchParams;
-            const examtime = params.get('examtime') || params.get('time') || null;
-            const calendarday = params.get('calendarday') || params.get('calendardate') || null;
+          // Prefer explicit calendarday + examtime from href if present
+          if (s.href) {
+            try {
+              const url = new URL(s.href, this.page.url());
+              const params = url.searchParams;
+              const examtime = params.get('examtime') || params.get('time') || null;
+              const calendarday = params.get('calendarday') || params.get('calendardate') || null;
 
-            if (calendarday && examtime) {
-              // calendarday expected as DD/MM/YY or DD/MM/YYYY
-              const parts = calendarday.split('/').map(p => p.trim());
-              if (parts.length === 3) {
-                let day = parseInt(parts[0], 10);
-                let month = parseInt(parts[1], 10) - 1;
-                let year = parseInt(parts[2], 10);
-                if (year < 100) year += 2000;
+              if (calendarday && examtime) {
+                // calendarday expected as DD/MM/YY or DD/MM/YYYY
+                const parts = calendarday.split('/').map(p => p.trim());
+                if (parts.length === 3) {
+                  let day = parseInt(parts[0], 10);
+                  let month = parseInt(parts[1], 10) - 1;
+                  let year = parseInt(parts[2], 10);
+                  if (year < 100) year += 2000;
 
-                // examtime might include trailing + or spaces
-                const timeMatch = String(examtime).match(/(\d{1,2}:\d{2})/);
-                if (timeMatch) {
-                  const [hh, mm] = timeMatch[1].split(':').map(n => parseInt(n, 10));
-                  datetime = new Date(year, month, day, hh, mm);
-                } else {
-                  datetime = new Date(year, month, day);
+                  // examtime might include trailing + or spaces
+                  const timeMatch = String(examtime).match(/(\d{1,2}:\d{2})/);
+                  if (timeMatch) {
+                    const [hh, mm] = timeMatch[1].split(':').map(n => parseInt(n, 10));
+                    datetime = new Date(year, month, day, hh, mm);
+                  } else {
+                    datetime = new Date(year, month, day);
+                  }
                 }
               }
+            } catch (e) {
+              // ignore parse errors and fall back
             }
-          } catch (e) {
-            // ignore parse errors and fall back
           }
+
+          // If we couldn't parse a full date, try to parse timeText and guess date using header/year
+          if (!datetime && s.timeText) {
+            const timeMatch = String(s.timeText).match(/(\d{1,2}:\d{2})/);
+            if (timeMatch) {
+              const [hh, mm] = timeMatch[1].split(':').map(n => parseInt(n, 10));
+              // try to derive year from header
+              let year = (new Date()).getFullYear();
+              const yearMatch = String(header || '').match(/(20\d{2}|\d{4}|\d{2})/);
+              if (yearMatch) {
+                let y = parseInt(yearMatch[1], 10);
+                if (y < 100) y += 2000;
+                if (y >= 1970) year = y;
+              }
+              // No day information available — set to today's date with parsed time (caller can adjust)
+              const today = new Date();
+              datetime = new Date(year, today.getMonth(), today.getDate(), hh, mm);
+            }
+          }
+
+          slots.push({ datetime, available });
         }
 
-        // If we couldn't parse a full date, try to parse timeText and guess date using header/year
-        if (!datetime && s.timeText) {
-          const timeMatch = String(s.timeText).match(/(\d{1,2}:\d{2})/);
-          if (timeMatch) {
-            const [hh, mm] = timeMatch[1].split(':').map(n => parseInt(n, 10));
-            // try to derive year from header
-            let year = (new Date()).getFullYear();
-            const yearMatch = String(header || '').match(/(20\d{2}|\d{4}|\d{2})/);
-            if (yearMatch) {
-              let y = parseInt(yearMatch[1], 10);
-              if (y < 100) y += 2000;
-              if (y >= 1970) year = y;
-            }
-            // No day information available — set to today's date with parsed time (caller can adjust)
-            const today = new Date();
-            datetime = new Date(year, today.getMonth(), today.getDate(), hh, mm);
-          }
-        }
-
-        slots.push({ datetime, available });
+        return slots;
+      } catch (error) {
+        throw new Error(`Failed to get time slots: ${error.message}`);
       }
-
-      return slots;
-    } catch (error) {
-      throw new Error(`Failed to get time slots: ${error.message}`);
-    }
+    }, { selector: 'td[background*="/WebPhase1/images/drivercalendar/"]' });
   }
 
   /**
@@ -352,51 +402,55 @@ class ChromeScraper {
    * @returns {Promise<Array<{datetime: Date|null, available: boolean}>>}
    */
   async getAvailableTimeSlots() {
-    const slots = await this.getTimeSlots();
-    return Array.isArray(slots) ? slots.filter(s => s && s.available) : [];
+    return this.runStep('get-available-time-slots', async () => {
+      const slots = await this.getTimeSlots();
+      return Array.isArray(slots) ? slots.filter(s => s && s.available) : [];
+    });
   }
 
   /**
    * Move the calendar to the next month.
    */
   async goToNextCalendarMonth() {
-    this.checkInitializedLoggedIn();
+    return this.runStep('next-calendar-month', async () => {
+      this.checkInitializedLoggedIn();
 
-    try {
-      logStep('Going to next calendar month');
-      await this.logCalendarNavigationControls(this.page);
-      await this.logCurrentCalendarMonth(this.page);
-
-      const nextMonthButtonHandle = await this.waitForCalendarNextMonthButton(this.page);
-
-      // get current month label to detect change
-      const before = await this.getCalendarMonth(this.page);
-
-      // Click and wait for calendar header to change
-      await this.preNavDelay();
-      await nextMonthButtonHandle.asElement().click();
-
-      // Wait until calendar header text changes (or timeout)
       try {
-        await this.page.waitForFunction((prev) => {
-          const header = document.querySelector('#calendarHeader');
-          if (!header) return false;
-          return header.textContent.replace(/\s+/g, ' ').trim() !== prev;
-        }, {}, before);
-      } catch (e) {
-        // fallback to waiting for network idle or complete state
-        try {
-          await this.page.waitForFunction(() => document.readyState === 'complete', { timeout: 5000 });
-        } catch (_) {
-          // ignore
-        }
-      }
+        logStep('Going to next calendar month');
+        await this.logCalendarNavigationControls(this.page);
+        await this.logCurrentCalendarMonth(this.page);
 
-      logStep('Moved to next calendar month (attempted)');
-      await this.logCurrentCalendarMonth(this.page);
-    } catch (error) {
-      throw new Error(`Failed to go to next calendar month: ${error.message}`);
-    }
+        const nextMonthButtonHandle = await this.waitForCalendarNextMonthButton(this.page);
+
+        // get current month label to detect change
+        const before = await this.getCalendarMonth(this.page);
+
+        // Click and wait for calendar header to change
+        await this.preNavDelay();
+        await nextMonthButtonHandle.asElement().click();
+
+        // Wait until calendar header text changes (or timeout)
+        try {
+          await this.page.waitForFunction((prev) => {
+            const header = document.querySelector('#calendarHeader');
+            if (!header) return false;
+            return header.textContent.replace(/\s+/g, ' ').trim() !== prev;
+          }, {}, before);
+        } catch (e) {
+          // fallback to waiting for network idle or complete state
+          try {
+            await this.page.waitForFunction(() => document.readyState === 'complete', { timeout: 5000 });
+          } catch (_) {
+            // ignore
+          }
+        }
+
+        logStep('Moved to next calendar month (attempted)');
+        await this.logCurrentCalendarMonth(this.page);
+      } catch (error) {
+        throw new Error(`Failed to go to next calendar month: ${error.message}`);
+      }
+    }, { expected: 'Next month calendar image button' });
   }
 
   /**
@@ -449,14 +503,16 @@ class ChromeScraper {
    * @param {string} name
    */
   async waitForNamedInput(frame, name) {
-    try {
-      await frame.waitForFunction(inputName => {
-        return document.getElementsByName(inputName).length > 0;
-      }, {}, name);
-    } catch (error) {
-      await this.logFrameInputs(frame);
-      throw error;
-    }
+    return this.runStep('wait-for-input', async () => {
+      try {
+        await frame.waitForFunction(inputName => {
+          return document.getElementsByName(inputName).length > 0;
+        }, {}, name);
+      } catch (error) {
+        await this.logFrameInputs(frame);
+        throw error;
+      }
+    }, { frame: frame.name(), inputName: name });
   }
 
   /**
@@ -466,12 +522,14 @@ class ChromeScraper {
    * @param {string} value
    */
   async typeNamedInput(frame, name, value) {
-    const input = await frame.$(`input[name="${name}"]`);
-    if (!input) {
-      throw new Error(`Input not found: ${name}`);
-    }
+    return this.runStep('type-input', async () => {
+      const input = await frame.$(`input[name="${name}"]`);
+      if (!input) {
+        throw new Error(`Input not found: ${name}`);
+      }
 
-    await input.type(value);
+      await input.type(value);
+    }, { frame: frame.name(), inputName: name });
   }
 
   /**
@@ -558,31 +616,33 @@ class ChromeScraper {
    * @param {string} valueOrText
    */
   async selectByValueOrText(context, selector, valueOrText) {
-    const selectedValue = await context.evaluate((selectSelector, expected) => {
-      const select = document.querySelector(selectSelector);
-      if (!select) {
-        return null;
+    return this.runStep('select-option', async () => {
+      const selectedValue = await context.evaluate((selectSelector, expected) => {
+        const select = document.querySelector(selectSelector);
+        if (!select) {
+          return null;
+        }
+
+        const expectedText = String(expected).trim();
+        const option = Array.from(select.options).find(item => {
+          return item.value === expectedText || item.textContent.trim() === expectedText;
+        });
+
+        if (!option) {
+          return null;
+        }
+
+        select.value = option.value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        return option.value;
+      }, selector, valueOrText);
+
+      if (!selectedValue) {
+        throw new Error(`Could not find option "${valueOrText}" for ${selector}`);
       }
 
-      const expectedText = String(expected).trim();
-      const option = Array.from(select.options).find(item => {
-        return item.value === expectedText || item.textContent.trim() === expectedText;
-      });
-
-      if (!option) {
-        return null;
-      }
-
-      select.value = option.value;
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      return option.value;
-    }, selector, valueOrText);
-
-    if (!selectedValue) {
-      throw new Error(`Could not find option "${valueOrText}" for ${selector}`);
-    }
-
-    logStep(`Selected ${selector} option value=${selectedValue}`);
+      logStep(`Selected ${selector} option value=${selectedValue}`);
+    }, { selector });
   }
 
   /**
@@ -664,18 +724,20 @@ class ChromeScraper {
    * @returns {Promise<string|null>}
    */
   async getCalendarMonth(context = this.page) {
-    try {
-      await context.waitForSelector('#calendarHeader', { timeout: 5000 });
-    } catch (e) {
-      // no header found, return null
-      return null;
-    }
+    return this.runStep('get-calendar-month', async () => {
+      try {
+        await context.waitForSelector('#calendarHeader', { timeout: 5000 });
+      } catch (e) {
+        // no header found, return null
+        return null;
+      }
 
-    return this.retryEvaluate(context, () => {
-      const header = document.querySelector('#calendarHeader');
-      if (!header) return null;
-      return header.textContent.replace(/\s+/g, ' ').trim();
-    });
+      return this.retryEvaluate(context, () => {
+        const header = document.querySelector('#calendarHeader');
+        if (!header) return null;
+        return header.textContent.replace(/\s+/g, ' ').trim();
+      });
+    }, { selector: '#calendarHeader' });
   }
 
   /**
@@ -693,17 +755,19 @@ class ChromeScraper {
    * @param {string} value
    */
   async waitForInputButtonByValue(context, value) {
-    await context.waitForFunction(expectedValue => {
-      return Array.from(document.querySelectorAll('input[type="button"]')).some(input => {
-        return input.value.trim() === expectedValue;
-      });
-    }, {}, value);
+    return this.runStep('wait-for-button', async () => {
+      await context.waitForFunction(expectedValue => {
+        return Array.from(document.querySelectorAll('input[type="button"]')).some(input => {
+          return input.value.trim() === expectedValue;
+        });
+      }, {}, value);
 
-    return context.evaluateHandle(expectedValue => {
-      return Array.from(document.querySelectorAll('input[type="button"]')).find(input => {
-        return input.value.trim() === expectedValue;
-      });
-    }, value);
+      return context.evaluateHandle(expectedValue => {
+        return Array.from(document.querySelectorAll('input[type="button"]')).find(input => {
+          return input.value.trim() === expectedValue;
+        });
+      }, value);
+    }, { expectedValue: value });
   }
 
   /**
@@ -712,10 +776,12 @@ class ChromeScraper {
    * @param {string} selector
    */
   async clickAndWaitForNavigation(frame, selector) {
-    await Promise.all([
-      frame.waitForNavigation({ waitUntil: WAIT_UNTIL }),
-      frame.click(selector)
-    ]);
+    return this.runStep('click-and-navigate', async () => {
+      await Promise.all([
+        frame.waitForNavigation({ waitUntil: WAIT_UNTIL }),
+        frame.click(selector)
+      ]);
+    }, { selector });
   }
 
   /**
@@ -724,10 +790,12 @@ class ChromeScraper {
    * @param {import('puppeteer').ElementHandle} element
    */
   async clickElementAndWaitForNavigation(page, element) {
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: WAIT_UNTIL }),
-      element.click()
-    ]);
+    return this.runStep('click-element-and-navigate', async () => {
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: WAIT_UNTIL }),
+        element.click()
+      ]);
+    });
   }
 
   /**

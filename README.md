@@ -112,6 +112,41 @@ needed. Existing environment variables take precedence over `.env` values.
 The Telegram token is not required for this script. It opens a visible browser,
 so run it in a graphical desktop session. The `.env` file is ignored by Git.
 
+### Scraper Debug Files
+
+`npm run test-scraper` enables debug capture by default. Each run creates a unique
+directory under `debug/` and prints its absolute path. For the bot, enable it with
+`SCRAPER_DEBUG=1`. Set `SCRAPER_DEBUG=0` to disable capture in the test script;
+`SCRAPER_DEBUG_DIR` overrides the output directory.
+
+Each stage saves the current page DOM and every iframe before and after the
+action. On failure, it saves another snapshot and a full-page screenshot before
+closing the browser. The HTML includes live form state; login and password fields
+are redacted in HTML and hidden in screenshots. Known credentials are also
+removed from saved HTML and journal strings. Other page content can contain
+personal information, so keep these files local. The default `debug/` is ignored
+by Git; add a custom output directory to your ignore rules if needed.
+
+```text
+debug/<UTC-timestamp>-<unique-suffix>/
+  steps.jsonl
+  001-init-browser-before/
+  002-init-browser-after/
+    page.html
+  ...
+  012-wait-for-button-error/
+    page.html
+    frame-01.html
+    screenshot.png
+```
+
+`steps.jsonl` records each stage's time, phase, URL, expected control, duration,
+frame names/URLs, file paths and errors. Start with its last `error` entry and
+open the corresponding HTML/frame files to diagnose a failed selector or route.
+Snapshot failures are recorded where possible and never replace the scraping
+error. The test script returns a nonzero exit code on failure. This diagnostic
+mode does not implement booking, cancellation or confirmation actions.
+
 ### Environment Setup
 
 ```bash
@@ -141,6 +176,12 @@ The bot currently supports:
 
 ```bash
 npm test
+```
+
+To verify HTML diagnostics with Chrome against a local fixture (no site login):
+
+```bash
+node tests/scraper-debug.browser.js
 ```
 
 ### Code Style
