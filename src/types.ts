@@ -1,4 +1,6 @@
-import type { LaunchOptions } from 'puppeteer';
+import type { Frame, LaunchOptions, Page } from 'puppeteer';
+
+export type BrowserContext = Page | Frame;
 
 export interface Credentials {
   username: string;

@@ -6,6 +6,9 @@ import path from 'node:path';
 import { test } from 'node:test';
 import ChromeScraper from '../src/scraper.ts';
 import type { DebugEntry } from '../src/scraper-debug.ts';
+import BrowserActions from '../src/scraper/browser-actions.ts';
+import DebugInspector from '../src/scraper/debug-inspector.ts';
+import StepRunner from '../src/scraper/step-runner.ts';
 
 test('Chrome snapshots preserve live forms, redact credentials and capture iframe failures', async (t) => {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'scraper-debug-browser-'));
@@ -134,4 +137,61 @@ test('calendar extraction returns typed dates, availability and unresolved slots
   await button.dispose();
   await scraper.goToNextCalendarMonth();
   assert.equal(await scraper.getCalendarMonth(), 'December 2026');
+});
+
+test('shared browser actions and inspector work with explicit dependencies', async (t) => {
+  const scraper = new ChromeScraper();
+  t.after(() => scraper.close());
+  await scraper.initBrowser(2000, { headless: true, debug: false });
+  const page = scraper.getPage();
+  const capture = t.mock.method(scraper.debug, 'capture', async () => undefined);
+  const messages: string[] = [];
+  const log = (message: string) => { messages.push(message); };
+  const inspector = new DebugInspector(log);
+  const steps = new StepRunner({ getPage: () => page, getRecorder: () => scraper.debug });
+  const actions = new BrowserActions({ steps, inspector, getNavDelayMs: () => 0, log });
+  await page.setContent(`<!doctype html><html><head><title>Actions fixture</title></head><body>
+    <input name="fixture">
+    <select id="center"><option value="A">First</option><option value="B">Second</option></select>
+    <input id="next" type="button" value="Next" onclick="location.hash = 'first'">
+    <input id="continue" type="button" value="Continue" onclick="location.hash = 'second'">
+    <img title="Next month.">
+  </body></html>`);
+
+  const frame = page.mainFrame();
+  await actions.waitForNamedInput(frame, 'fixture');
+  await actions.typeNamedInput(frame, 'fixture', 'typed value');
+  assert.equal(await frame.$eval('input[name="fixture"]', input => input.value), 'typed value');
+  await actions.selectByValueOrText(page, '#center', 'Second');
+  assert.equal(await page.$eval('select#center', select => select.value), 'B');
+  await actions.selectByValueOrText(page, '#center', 'A');
+  assert.equal(await page.$eval('select#center', select => select.value), 'A');
+  const result = await actions.retryEvaluate(page, (value: number) => ({ title: document.title, value }), 7);
+  assert.deepEqual(result, { title: 'Actions fixture', value: 7 });
+
+  await inspector.logFrameInputs(frame);
+  await inspector.logClickableControls(page, 'fixture');
+  await inspector.logSelectOptions(page, '#center');
+  await inspector.logCalendarNavigationControls(page);
+  assert.ok(messages.some(message => message.includes('name=fixture')));
+  assert.ok(messages.some(message => message.includes('value=Continue')));
+  assert.ok(messages.some(message => message.includes('value=B text=Second')));
+  assert.ok(messages.some(message => message.includes('title=Next month.')));
+
+  await actions.preNavDelay();
+  await actions.clickAndWaitForNavigation(page, '#next');
+  assert.ok(page.url().endsWith('#first'));
+  const button = await actions.waitForInputButtonByValue(page, 'Continue');
+  await actions.clickElementAndWaitForNavigation(page, button);
+  await button.dispose();
+  assert.ok(page.url().endsWith('#second'));
+  assert.deepEqual(capture.mock.calls.map(call => call.arguments.slice(1, 3)), [
+    ['wait-for-input', 'before'], ['wait-for-input', 'after'],
+    ['type-input', 'before'], ['type-input', 'after'],
+    ['select-option', 'before'], ['select-option', 'after'],
+    ['select-option', 'before'], ['select-option', 'after'],
+    ['click-and-navigate', 'before'], ['click-and-navigate', 'after'],
+    ['wait-for-button', 'before'], ['wait-for-button', 'after'],
+    ['click-element-and-navigate', 'before'], ['click-element-and-navigate', 'after']
+  ]);
 });

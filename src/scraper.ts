@@ -1,9 +1,10 @@
 import puppeteer, { type Browser, type Page, type Frame, type ElementHandle, type EvaluateFunc } from 'puppeteer';
 import ScraperDebug, { type DebugDetails } from './scraper-debug.ts';
 import { errorMessage } from './errors.ts';
-import type { Credentials, ExamDetails, ExamTimeSlot, LogLevel, ScraperOptions } from './types.ts';
-
-type BrowserContext = Page | Frame;
+import type { BrowserContext, Credentials, ExamDetails, ExamTimeSlot, LogLevel, ScraperOptions } from './types.ts';
+import BrowserActions from './scraper/browser-actions.ts';
+import DebugInspector from './scraper/debug-inspector.ts';
+import StepRunner from './scraper/step-runner.ts';
 
 const TOP_FRAME_NAME = 'top';
 const TOP_FRAME_URL_PART = 'TPRTDLogo.jsp';
@@ -51,6 +52,9 @@ export default class ChromeScraper {
   page: Page | null;
   debug: ScraperDebug;
   private navDelayMs = 0;
+  private readonly actions: BrowserActions;
+  private readonly inspector: DebugInspector;
+  private readonly steps: StepRunner;
 
   constructor() {
     this.creds = null;
@@ -58,6 +62,14 @@ export default class ChromeScraper {
     this.browser = null;
     this.page = null;
     this.debug = this.createDebugRecorder();
+    this.steps = new StepRunner({ getPage: () => this.page, getRecorder: () => this.debug });
+    this.inspector = new DebugInspector(logStep);
+    this.actions = new BrowserActions({
+      steps: this.steps,
+      inspector: this.inspector,
+      getNavDelayMs: () => this.navDelayMs,
+      log: logStep
+    });
   }
 
   createDebugRecorder(enabled = process.env.SCRAPER_DEBUG === '1',
@@ -72,25 +84,7 @@ export default class ChromeScraper {
   }
 
   async runStep<T>(step: string, action: () => Promise<T>, details: DebugDetails = {}): Promise<T> {
-    await this.debug.capture(this.page, step, 'before', details);
-    const started = Date.now();
-    try {
-      const result = await action();
-      await this.debug.capture(this.page, step, 'after', {
-        ...details, durationMs: Date.now() - started
-      });
-      return result;
-    } catch (error) {
-      await this.debug.capture(this.page, step, 'error', {
-        ...details, durationMs: Date.now() - started,
-        error: {
-          name: error instanceof Error ? error.name : 'Error',
-          message: errorMessage(error),
-          ...(error instanceof Error && error.stack ? { stack: error.stack } : {})
-        }
-      });
-      throw error;
-    }
+    return this.steps.run(step, action, details);
   }
 
   /**
@@ -137,10 +131,7 @@ export default class ChromeScraper {
    * Small helper to wait before navigation-triggering actions when configured.
    */
   async preNavDelay(): Promise<void> {
-    if (this.navDelayMs && this.navDelayMs > 0) {
-      log(`Waiting ${this.navDelayMs}ms before navigation`, 'DEBUG');
-      await new Promise(r => setTimeout(r, this.navDelayMs));
-    }
+    return this.actions.preNavDelay();
   }
 
   /**
@@ -504,135 +495,42 @@ export default class ChromeScraper {
    * Wait for an input by its name attribute.
    */
   async waitForNamedInput(frame: Frame, name: string): Promise<void> {
-    return this.runStep('wait-for-input', async () => {
-      try {
-        await frame.waitForFunction(inputName => {
-          return document.getElementsByName(inputName).length > 0;
-        }, {}, name);
-      } catch (error) {
-        await this.logFrameInputs(frame);
-        throw error;
-      }
-    }, { frame: frame.name(), inputName: name });
+    return this.actions.waitForNamedInput(frame, name);
   }
 
   /**
    * Type into an input by its name attribute.
    */
   async typeNamedInput(frame: Frame, name: string, value: string): Promise<void> {
-    return this.runStep('type-input', async () => {
-      const input = await frame.$(`input[name="${name}"]`);
-      if (!input) {
-        throw new Error(`Input not found: ${name}`);
-      }
-
-      await input.type(value);
-    }, { frame: frame.name(), inputName: name });
+    return this.actions.typeNamedInput(frame, name, value);
   }
 
   /**
    * Log visible input names in the current frame for debugging.
    */
   async logFrameInputs(frame: Frame): Promise<void> {
-    const inputs = await frame.evaluate(() => {
-      return Array.from(document.querySelectorAll('input')).map(input => {
-        const type = input.getAttribute('type') || '<no type>';
-        const name = input.getAttribute('name') || '<no name>';
-        const id = input.id || '<no id>';
-
-        return `${type} name=${name} id=${id}`;
-      });
-    });
-
-    logStep(`Inputs in frame "${frame.name()}": ${inputs.length ? inputs.join(', ') : '<none>'}`);
+    return this.inspector.logFrameInputs(frame);
   }
 
   /**
    * Log buttons and submit inputs in the current frame for debugging.
    */
   async logClickableControls(context: BrowserContext, label = 'frame'): Promise<void> {
-    const controls = await context.evaluate(() => {
-      const buttons = Array.from(document.querySelectorAll('button')).map(button => {
-        const type = button.getAttribute('type') || '<no type>';
-        const name = button.getAttribute('name') || '<no name>';
-        const id = button.id || '<no id>';
-        const text = (button.textContent ?? '').trim() || '<no text>';
-
-        return `button type=${type} name=${name} id=${id} text=${text}`;
-      });
-
-      const submitInputs = Array.from(document.querySelectorAll('input[type="submit"]')).map(input => {
-        const name = input.getAttribute('name') || '<no name>';
-        const id = input.id || '<no id>';
-        const value = input.getAttribute('value') || '<no value>';
-
-        return `submit name=${name} id=${id} value=${value}`;
-      });
-
-      const buttonInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="button"]')).map(input => {
-        const name = input.getAttribute('name') || '<no name>';
-        const id = input.id || '<no id>';
-        const value = input.getAttribute('value') || '<no value>';
-        const onclick = input.getAttribute('onclick') || '<no onclick>';
-
-        return `input-button name=${name} id=${id} value=${value} onclick=${onclick}`;
-      });
-
-      return buttons.concat(submitInputs, buttonInputs);
-    });
-
-    logStep(`Clickable controls in ${label}: ${controls.length ? controls.join(', ') : '<none>'}`);
+    return this.inspector.logClickableControls(context, label);
   }
 
   /**
    * Log select options for debugging form values.
    */
   async logSelectOptions(context: BrowserContext, selector: string): Promise<void> {
-    const options = await context.evaluate(selectSelector => {
-      const select = document.querySelector<HTMLSelectElement>(selectSelector);
-      if (!select) {
-        return null;
-      }
-
-      return Array.from(select.options).map(option => {
-        return `value=${option.value} text=${(option.textContent ?? '').trim()}`;
-      });
-    }, selector);
-
-    logStep(`Options for ${selector}: ${options ? options.join(', ') : '<select not found>'}`);
+    return this.inspector.logSelectOptions(context, selector);
   }
 
   /**
    * Select an option by value first, then by visible text.
    */
   async selectByValueOrText(context: BrowserContext, selector: string, valueOrText: string): Promise<void> {
-    return this.runStep('select-option', async () => {
-      const selectedValue = await context.evaluate((selectSelector, expected) => {
-        const select = document.querySelector<HTMLSelectElement>(selectSelector);
-        if (!select) {
-          return null;
-        }
-
-        const expectedText = String(expected).trim();
-        const option = Array.from(select.options).find(item => {
-          return item.value === expectedText || (item.textContent ?? '').trim() === expectedText;
-        });
-
-        if (!option) {
-          return null;
-        }
-
-        select.value = option.value;
-        select.dispatchEvent(new Event('change', { bubbles: true }));
-        return option.value;
-      }, selector, valueOrText);
-
-      if (!selectedValue) {
-        throw new Error(`Could not find option "${valueOrText}" for ${selector}`);
-      }
-
-      logStep(`Selected ${selector} option value=${selectedValue}`);
-    }, { selector });
+    return this.actions.selectByValueOrText(context, selector, valueOrText);
   }
 
   /**
@@ -641,39 +539,14 @@ export default class ChromeScraper {
   async retryEvaluate<Params extends unknown[], Func extends EvaluateFunc<Params>>(
     context: BrowserContext, fn: Func, ...args: Params
   ): Promise<Awaited<ReturnType<Func>>> {
-    const maxAttempts = 3;
-    const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
-
-    for (let attempt = 1; ; attempt++) {
-      try {
-        return await context.evaluate(fn, ...args);
-      } catch (err) {
-        const msg = errorMessage(err);
-        if (msg.includes('Execution context was destroyed') || msg.includes('Protocol error') || attempt === maxAttempts) {
-          if (attempt === maxAttempts) throw err;
-          await delay(500 * attempt);
-          continue;
-        }
-        throw err;
-      }
-    }
+    return this.actions.retryEvaluate(context, fn, ...args);
   }
 
   /**
    * Log calendar navigation images for debugging.
    */
   async logCalendarNavigationControls(context: BrowserContext): Promise<void> {
-    const controls = await context.evaluate(() => {
-      return Array.from(document.querySelectorAll('img')).map(image => {
-        const title = image.getAttribute('title') || '<no title>';
-        const src = image.getAttribute('src') || '<no src>';
-        const onclick = image.getAttribute('onclick') || '<no onclick>';
-
-        return `img title=${title} src=${src} onclick=${onclick}`;
-      });
-    });
-
-    logStep(`Calendar image controls: ${controls.length ? controls.join(', ') : '<none>'}`);
+    return this.inspector.logCalendarNavigationControls(context);
   }
 
   /**
@@ -739,45 +612,21 @@ export default class ChromeScraper {
    * Find an input button by its displayed value.
    */
   async waitForInputButtonByValue(context: BrowserContext, value: string): Promise<ElementHandle<HTMLInputElement>> {
-    return this.runStep('wait-for-button', async () => {
-      await context.waitForFunction(expectedValue => {
-        return Array.from(document.querySelectorAll<HTMLInputElement>('input[type="button"]')).some(input => {
-          return input.value.trim() === expectedValue;
-        });
-      }, {}, value);
-
-      return context.evaluateHandle(expectedValue => {
-        const input = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="button"]')).find(input => {
-          return input.value.trim() === expectedValue;
-        });
-        if (!input) throw new Error(`Button disappeared: ${expectedValue}`);
-        return input;
-      }, value);
-    }, { expectedValue: value });
+    return this.actions.waitForInputButtonByValue(context, value);
   }
 
   /**
    * Click a selector inside a frame and wait for that frame to navigate.
    */
   async clickAndWaitForNavigation(frame: BrowserContext, selector: string): Promise<void> {
-    return this.runStep('click-and-navigate', async () => {
-      await Promise.all([
-        frame.waitForNavigation({ waitUntil: WAIT_UNTIL }),
-        frame.click(selector)
-      ]);
-    }, { selector });
+    return this.actions.clickAndWaitForNavigation(frame, selector);
   }
 
   /**
    * Click an element and wait for the current page to navigate.
    */
   async clickElementAndWaitForNavigation(page: Page, element: ElementHandle<Element>): Promise<void> {
-    return this.runStep('click-element-and-navigate', async () => {
-      await Promise.all([
-        page.waitForNavigation({ waitUntil: WAIT_UNTIL }),
-        element.click()
-      ]);
-    });
+    return this.actions.clickElementAndWaitForNavigation(page, element);
   }
 
   /**

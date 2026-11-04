@@ -5,6 +5,7 @@ import path from 'node:path';
 import { test, type TestContext } from 'node:test';
 import ScraperDebug, { type SnapshotFrame, type SnapshotPage, type DebugEntry } from '../src/scraper-debug.ts';
 import ChromeScraper from '../src/scraper.ts';
+import StepRunner from '../src/scraper/step-runner.ts';
 
 async function tempDirectory(t: TestContext): Promise<string> {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'scraper-debug-test-'));
@@ -143,4 +144,39 @@ test('screenshot failure preserves HTML and the scraping error', async (t) => {
   assert.equal(event.error?.message, 'Missing selector');
   assert.equal(event.screenshotError, 'Screenshot unavailable');
   assert.equal(event.frames[0]?.file, 'page.html');
+});
+
+test('step runner follows page lifecycle, recorder replacement and nested failures', async (t) => {
+  const first = new ScraperDebug();
+  const second = new ScraperDebug();
+  const firstCapture = t.mock.method(first, 'capture', async () => undefined);
+  const secondCapture = t.mock.method(second, 'capture', async () => undefined);
+  const browserPage = page([frame('<html>Ready</html>')]);
+  let currentPage: SnapshotPage | null = null;
+  let recorder = first;
+  const runner = new StepRunner({ getPage: () => currentPage, getRecorder: () => recorder });
+
+  const result = { initialized: true };
+  assert.equal(await runner.run('init-browser', async () => {
+    currentPage = browserPage;
+    return result;
+  }), result);
+  assert.equal(firstCapture.mock.calls[0]?.arguments[0], null);
+  assert.equal(firstCapture.mock.calls[1]?.arguments[0], browserPage);
+
+  recorder = second;
+  await runner.run('close', async () => { currentPage = null; });
+  assert.equal(firstCapture.mock.callCount(), 2);
+  assert.equal(secondCapture.mock.calls[0]?.arguments[0], browserPage);
+  assert.equal(secondCapture.mock.calls[1]?.arguments[0], null);
+
+  const original = new Error('Nested action failed');
+  await assert.rejects(runner.run('outer', () => runner.run('inner', async () => {
+    throw original;
+  })), error => error === original);
+  assert.deepEqual(secondCapture.mock.calls.map(call => call.arguments.slice(1, 3)), [
+    ['close', 'before'], ['close', 'after'],
+    ['outer', 'before'], ['inner', 'before'], ['inner', 'error'], ['outer', 'error']
+  ]);
+  assert.equal(secondCapture.mock.calls[5]?.arguments[3]?.error?.message, original.message);
 });
