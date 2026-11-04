@@ -1,5 +1,5 @@
-import puppeteer, { type Browser, type Page, type Frame, type ElementHandle, type EvaluateFunc } from 'puppeteer';
-import ScraperDebug, { type DebugDetails } from './scraper-debug.ts';
+import puppeteer, { type Browser, type Page } from 'puppeteer';
+import ScraperDebug from './scraper-debug.ts';
 import { errorMessage } from './errors.ts';
 import type { BrowserContext, Credentials, ExamDetails, ExamTimeSlot, LogLevel, ScraperOptions } from './types.ts';
 import BrowserActions from './scraper/browser-actions.ts';
@@ -72,7 +72,7 @@ export default class ChromeScraper {
     });
   }
 
-  createDebugRecorder(enabled = process.env.SCRAPER_DEBUG === '1',
+  private createDebugRecorder(enabled = process.env.SCRAPER_DEBUG === '1',
     rootDir = process.env.SCRAPER_DEBUG_DIR || 'debug'): ScraperDebug {
     return new ScraperDebug({
       enabled, rootDir,
@@ -81,10 +81,6 @@ export default class ChromeScraper {
       onSnapshot: directory => logStep(`HTML snapshot: ${directory}`),
       onWarning: message => log(message, 'WARN')
     });
-  }
-
-  async runStep<T>(step: string, action: () => Promise<T>, details: DebugDetails = {}): Promise<T> {
-    return this.steps.run(step, action, details);
   }
 
   /**
@@ -107,7 +103,7 @@ export default class ChromeScraper {
       log(`Log level set to ${logLevel}`, 'DEBUG');
     }
 
-    return this.runStep('init-browser', async () => {
+    return this.steps.run('init-browser', async () => {
       this.browser = await puppeteer.launch({
         headless: true,
         args: [
@@ -128,17 +124,10 @@ export default class ChromeScraper {
   }
 
   /**
-   * Small helper to wait before navigation-triggering actions when configured.
-   */
-  async preNavDelay(): Promise<void> {
-    return this.actions.preNavDelay();
-  }
-
-  /**
    * Close the browser and clean up resources
    */
   async close(): Promise<void> {
-    return this.runStep('close', async () => {
+    return this.steps.run('close', async () => {
       if (this.browser) {
         await this.browser.close();
         this.browser = null;
@@ -153,7 +142,7 @@ export default class ChromeScraper {
    */
   async login(creds: Credentials): Promise<void> {
     this.creds = creds;
-    return this.runStep('login', async () => {
+    return this.steps.run('login', async () => {
       const loginPage = new LoginPage({
         page: this.getPage(),
         actions: this.actions,
@@ -176,7 +165,7 @@ export default class ChromeScraper {
    * Navigate to the rebooking calendar page
    */
   async navigateToCancelRebook(): Promise<void> {
-    return this.runStep('navigate-to-cancel-rebook', () => this.getExistingExamPage().open(),
+    return this.steps.run('navigate-to-cancel-rebook', () => this.getExistingExamPage().open(),
       ExistingExamPage.openDetails);
   }
 
@@ -184,7 +173,7 @@ export default class ChromeScraper {
    * Choose the existing exam to proceed with rebooking
    */
   async chooseExistingExam(): Promise<void> {
-    return this.runStep('choose-existing-exam', () => this.getExistingExamPage().choose(),
+    return this.steps.run('choose-existing-exam', () => this.getExistingExamPage().choose(),
       ExistingExamPage.chooseDetails);
   }
 
@@ -201,7 +190,7 @@ export default class ChromeScraper {
    * Get the list of available exam city centers
    */
   async getExamCityCenters(): Promise<string[]> {
-    return this.runStep('get-exam-city-centers', () => this.getExamDetailsPage().getCenters(),
+    return this.steps.run('get-exam-city-centers', () => this.getExamDetailsPage().getCenters(),
       ExamDetailsPage.centersDetails);
   }
 
@@ -209,7 +198,7 @@ export default class ChromeScraper {
    * Submit exam details to search for available slots
    */
   async submitExamDetails(exam: ExamDetails): Promise<void> {
-    return this.runStep('submit-exam-details', () => this.getExamDetailsPage().submit(exam),
+    return this.steps.run('submit-exam-details', () => this.getExamDetailsPage().submit(exam),
       ExamDetailsPage.submitDetails);
   }
 
@@ -226,7 +215,7 @@ export default class ChromeScraper {
    * Get available time slots
    */
   async getTimeSlots(): Promise<ExamTimeSlot[]> {
-    return this.runStep('get-time-slots', () => this.getCalendarPage(this.checkInitializedLoggedIn()).getSlots(),
+    return this.steps.run('get-time-slots', () => this.getCalendarPage(this.checkInitializedLoggedIn()).getSlots(),
       CalendarPage.slotsDetails);
   }
 
@@ -234,7 +223,7 @@ export default class ChromeScraper {
    * Return only available time slots (filters result of getTimeSlots)
    */
   async getAvailableTimeSlots(): Promise<ExamTimeSlot[]> {
-    return this.runStep('get-available-time-slots',
+    return this.steps.run('get-available-time-slots',
       () => this.getCalendarPage(this.checkInitializedLoggedIn()).getAvailableSlots());
   }
 
@@ -242,7 +231,7 @@ export default class ChromeScraper {
    * Move the calendar to the next month.
    */
   async goToNextCalendarMonth(): Promise<void> {
-    return this.runStep('next-calendar-month', () => this.getCalendarPage(this.checkInitializedLoggedIn()).nextMonth(),
+    return this.steps.run('next-calendar-month', () => this.getCalendarPage(this.checkInitializedLoggedIn()).nextMonth(),
       CalendarPage.nextMonthDetails);
   }
 
@@ -258,103 +247,10 @@ export default class ChromeScraper {
   }
 
   /**
-   * Wait for an input by its name attribute.
-   */
-  async waitForNamedInput(frame: Frame, name: string): Promise<void> {
-    return this.actions.waitForNamedInput(frame, name);
-  }
-
-  /**
-   * Type into an input by its name attribute.
-   */
-  async typeNamedInput(frame: Frame, name: string, value: string): Promise<void> {
-    return this.actions.typeNamedInput(frame, name, value);
-  }
-
-  /**
-   * Log visible input names in the current frame for debugging.
-   */
-  async logFrameInputs(frame: Frame): Promise<void> {
-    return this.inspector.logFrameInputs(frame);
-  }
-
-  /**
-   * Log buttons and submit inputs in the current frame for debugging.
-   */
-  async logClickableControls(context: BrowserContext, label = 'frame'): Promise<void> {
-    return this.inspector.logClickableControls(context, label);
-  }
-
-  /**
-   * Log select options for debugging form values.
-   */
-  async logSelectOptions(context: BrowserContext, selector: string): Promise<void> {
-    return this.inspector.logSelectOptions(context, selector);
-  }
-
-  /**
-   * Select an option by value first, then by visible text.
-   */
-  async selectByValueOrText(context: BrowserContext, selector: string, valueOrText: string): Promise<void> {
-    return this.actions.selectByValueOrText(context, selector, valueOrText);
-  }
-
-  /**
-   * Retry a page/frame evaluate when transient navigation destroys the execution context.
-   */
-  async retryEvaluate<Params extends unknown[], Func extends EvaluateFunc<Params>>(
-    context: BrowserContext, fn: Func, ...args: Params
-  ): Promise<Awaited<ReturnType<Func>>> {
-    return this.actions.retryEvaluate(context, fn, ...args);
-  }
-
-  /**
-   * Log calendar navigation images for debugging.
-   */
-  async logCalendarNavigationControls(context: BrowserContext): Promise<void> {
-    return this.inspector.logCalendarNavigationControls(context);
-  }
-
-  /**
-   * Find the calendar next-month image button.
-   */
-  async waitForCalendarNextMonthButton(context: BrowserContext): Promise<ElementHandle<HTMLImageElement>> {
-    return this.getCalendarPage(context).waitForNextMonthButton();
-  }
-
-  /**
    * Get the current calendar month label.
    */
   async getCalendarMonth(context: BrowserContext = this.getPage()): Promise<string | null> {
     return this.getCalendarPage(context).getMonth();
-  }
-
-  /**
-   * Log the current calendar month label.
-   */
-  async logCurrentCalendarMonth(context: BrowserContext = this.getPage()): Promise<void> {
-    return this.getCalendarPage(context).logCurrentMonth();
-  }
-
-  /**
-   * Find an input button by its displayed value.
-   */
-  async waitForInputButtonByValue(context: BrowserContext, value: string): Promise<ElementHandle<HTMLInputElement>> {
-    return this.actions.waitForInputButtonByValue(context, value);
-  }
-
-  /**
-   * Click a selector inside a frame and wait for that frame to navigate.
-   */
-  async clickAndWaitForNavigation(frame: BrowserContext, selector: string): Promise<void> {
-    return this.actions.clickAndWaitForNavigation(frame, selector);
-  }
-
-  /**
-   * Click an element and wait for the current page to navigate.
-   */
-  async clickElementAndWaitForNavigation(page: Page, element: ElementHandle<Element>): Promise<void> {
-    return this.actions.clickElementAndWaitForNavigation(page, element);
   }
 
   /**
@@ -368,7 +264,7 @@ export default class ChromeScraper {
     return this.page;
   }
 
-  checkInitializedLoggedIn(): Page {
+  private checkInitializedLoggedIn(): Page {
     const page = this.getPage();
     if (!this.isLoggedIn) {
       throw new Error('Not logged in: please call login() first');

@@ -1,4 +1,4 @@
-import type { ElementHandle, EvaluateFunc, Frame, Page } from 'puppeteer';
+import type { ElementHandle, EvaluateFunc, Frame } from 'puppeteer';
 import { errorMessage } from '../errors.ts';
 import type { BrowserContext } from '../types.ts';
 import type DebugInspector from './debug-inspector.ts';
@@ -127,21 +127,14 @@ export default class BrowserActions {
     }, { expectedValue: value });
   }
 
-  async clickAndWaitForNavigation(frame: BrowserContext, selector: string): Promise<void> {
-    return this.steps.run('click-and-navigate', async () => {
+  async clickAndWaitForNavigation(context: BrowserContext, target: string | ElementHandle<Element>): Promise<void> {
+    // Keep journal step names stable for both ways of identifying the element.
+    const step = typeof target === 'string' ? 'click-and-navigate' : 'click-element-and-navigate';
+    return this.steps.run(step, async () => {
       await Promise.all([
-        frame.waitForNavigation({ waitUntil: WAIT_UNTIL }),
-        frame.click(selector)
+        context.waitForNavigation({ waitUntil: WAIT_UNTIL }),
+        typeof target === 'string' ? context.click(target) : target.click()
       ]);
-    }, { selector });
-  }
-
-  async clickElementAndWaitForNavigation(page: Page, element: ElementHandle<Element>): Promise<void> {
-    return this.steps.run('click-element-and-navigate', async () => {
-      await Promise.all([
-        page.waitForNavigation({ waitUntil: WAIT_UNTIL }),
-        element.click()
-      ]);
-    });
+    }, typeof target === 'string' ? { selector: target } : {});
   }
 }

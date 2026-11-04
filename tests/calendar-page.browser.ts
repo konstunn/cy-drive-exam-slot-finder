@@ -5,6 +5,10 @@ import path from 'node:path';
 import { test, type TestContext } from 'node:test';
 import ChromeScraper from '../src/scraper.ts';
 import type { DebugEntry } from '../src/scraper-debug.ts';
+import BrowserActions from '../src/scraper/browser-actions.ts';
+import DebugInspector from '../src/scraper/debug-inspector.ts';
+import CalendarPage from '../src/scraper/pages/calendar-page.ts';
+import StepRunner from '../src/scraper/step-runner.ts';
 
 async function fixture(t: TestContext) {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'calendar-page-browser-'));
@@ -70,7 +74,12 @@ test('calendar supports frame contexts and preserves authorization checks and mi
   const frame = await page.waitForFrame(frame => frame.name() === 'calendar');
   await frame.waitForSelector('#calendarHeader');
   assert.equal(await scraper.getCalendarMonth(frame), 'October 2026');
-  const button = await scraper.waitForCalendarNextMonthButton(frame);
+  const log = () => {};
+  const inspector = new DebugInspector(log);
+  const steps = new StepRunner({ getPage: () => page, getRecorder: () => scraper.debug });
+  const actions = new BrowserActions({ steps, inspector, getNavDelayMs: () => 0, log });
+  const calendar = new CalendarPage({ context: frame, actions, inspector, steps, log });
+  const button = await calendar.waitForNextMonthButton();
   assert.equal(await button.evaluate(image => image.title), 'Next month.');
   await button.dispose();
 

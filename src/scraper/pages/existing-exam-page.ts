@@ -8,7 +8,7 @@ const NEXT_BUTTON_VALUE = 'Next';
 
 interface ExistingExamPageOptions {
   page: Page;
-  actions: Pick<BrowserActions, 'preNavDelay' | 'waitForInputButtonByValue' | 'clickElementAndWaitForNavigation'>;
+  actions: Pick<BrowserActions, 'preNavDelay' | 'waitForInputButtonByValue' | 'clickAndWaitForNavigation'>;
   inspector: Pick<DebugInspector, 'logClickableControls'>;
   log: (message: string) => void;
 }
@@ -44,7 +44,7 @@ export default class ExistingExamPage {
       const nextButton = await actions.waitForInputButtonByValue(page, NEXT_BUTTON_VALUE);
       log('Clicking existing exam Next button and waiting for navigation');
       await actions.preNavDelay();
-      await actions.clickElementAndWaitForNavigation(page, nextButton);
+      await actions.clickAndWaitForNavigation(page, nextButton);
       log('Existing exam navigation completed');
     } catch (error) {
       throw new Error(`Failed to choose existing exam: ${errorMessage(error)}`);

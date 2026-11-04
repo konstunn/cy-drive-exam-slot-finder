@@ -49,7 +49,7 @@ test('Chrome snapshots preserve live forms, redact credentials and capture ifram
     notes.value = 'Live notes';
     document.body.insertAdjacentHTML('beforeend', '<p>Added by JavaScript</p>');
   }, scraper.creds);
-  await scraper.selectByValueOrText(page, '#center', 'B');
+  await page.select('#center', 'B');
   page.setDefaultTimeout(150);
   await assert.rejects(scraper.chooseExistingExam(), /Failed to choose existing exam/);
   const directory = scraper.debug.directory;
@@ -132,9 +132,6 @@ test('calendar extraction returns typed dates, availability and unresolved slots
     { datetime: null, available: true }
   ]);
 
-  const button = await scraper.waitForInputButtonByValue(page, 'Next');
-  assert.equal(await button.evaluate(input => input.value), 'Next');
-  await button.dispose();
   await scraper.goToNextCalendarMonth();
   assert.equal(await scraper.getCalendarMonth(), 'December 2026');
 });
@@ -182,7 +179,7 @@ test('shared browser actions and inspector work with explicit dependencies', asy
   await actions.clickAndWaitForNavigation(page, '#next');
   assert.ok(page.url().endsWith('#first'));
   const button = await actions.waitForInputButtonByValue(page, 'Continue');
-  await actions.clickElementAndWaitForNavigation(page, button);
+  await actions.clickAndWaitForNavigation(page, button);
   await button.dispose();
   assert.ok(page.url().endsWith('#second'));
   assert.deepEqual(capture.mock.calls.map(call => call.arguments.slice(1, 3)), [
@@ -194,4 +191,22 @@ test('shared browser actions and inspector work with explicit dependencies', asy
     ['wait-for-button', 'before'], ['wait-for-button', 'after'],
     ['click-element-and-navigate', 'before'], ['click-element-and-navigate', 'after']
   ]);
+
+  await page.goto('about:blank');
+  await page.setContent(`<iframe name="actions" srcdoc="<input type='button' value='Frame next' onclick=&quot;location.href='about:blank#frame-next'&quot;>"></iframe>`);
+  const child = await page.waitForFrame(frame => frame.name() === 'actions');
+  const frameButton = await actions.waitForInputButtonByValue(child, 'Frame next');
+  await actions.clickAndWaitForNavigation(child, frameButton);
+  assert.ok(child.url().endsWith('#frame-next'));
+
+  const original = new Error('Element click failed');
+  t.mock.method(frameButton, 'click', async () => { throw original; });
+  t.mock.method(child, 'waitForNavigation', async () => null);
+  await assert.rejects(actions.clickAndWaitForNavigation(child, frameButton), error => error === original);
+  const failure = capture.mock.calls.at(-1)?.arguments;
+  assert.ok(failure);
+  assert.equal(failure[1], 'click-element-and-navigate');
+  assert.equal(failure[2], 'error');
+  assert.equal(failure[3]?.error?.message, original.message);
+  await frameButton.dispose();
 });

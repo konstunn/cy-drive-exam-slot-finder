@@ -4,7 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { test, type TestContext } from 'node:test';
 import ScraperDebug, { type SnapshotFrame, type SnapshotPage, type DebugEntry } from '../src/scraper-debug.ts';
-import ChromeScraper from '../src/scraper.ts';
 import StepRunner from '../src/scraper/step-runner.ts';
 
 async function tempDirectory(t: TestContext): Promise<string> {
@@ -117,11 +116,11 @@ test('unwritable debug directory preserves action results and error identity', a
   const rootDir = path.join(directory, 'file');
   await fs.writeFile(rootDir, 'not a directory');
   const warnings: string[] = [];
-  const scraper = new ChromeScraper();
-  scraper.debug = new ScraperDebug({ enabled: true, rootDir, onWarning: message => warnings.push(message) });
-  assert.equal(await scraper.runStep('success', async () => 42), 42);
+  const recorder = new ScraperDebug({ enabled: true, rootDir, onWarning: message => warnings.push(message) });
+  const runner = new StepRunner({ getPage: () => null, getRecorder: () => recorder });
+  assert.equal(await runner.run('success', async () => 42), 42);
   const original = new Error('Original scraping failure');
-  await assert.rejects(scraper.runStep('failure', async () => { throw original; }),
+  await assert.rejects(runner.run('failure', async () => { throw original; }),
     error => error === original);
   assert.equal(warnings.length, 4);
 });
@@ -131,13 +130,9 @@ test('screenshot failure preserves HTML and the scraping error', async (t) => {
   const recorder = new ScraperDebug({ enabled: true, rootDir });
   const browserPage = page([frame('<html>Failure page</html>')]);
   browserPage.screenshot = async () => { throw new Error('Screenshot unavailable'); };
-  const scraper = new ChromeScraper();
-  scraper.debug = recorder;
-  const capture = recorder.capture.bind(recorder);
-  t.mock.method(recorder, 'capture', (...[_page, step, phase, details]: Parameters<ScraperDebug['capture']>) =>
-    capture(browserPage, step, phase, details));
+  const runner = new StepRunner({ getPage: () => browserPage, getRecorder: () => recorder });
   const original = new Error('Missing selector');
-  await assert.rejects(scraper.runStep('missing-button', async () => { throw original; }),
+  await assert.rejects(runner.run('missing-button', async () => { throw original; }),
     error => error === original);
   const event = (await entries(recorder)).find(entry => entry.phase === 'error');
   assert.ok(event);
