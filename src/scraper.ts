@@ -5,9 +5,8 @@ import type { BrowserContext, Credentials, ExamDetails, ExamTimeSlot, LogLevel, 
 import BrowserActions from './scraper/browser-actions.ts';
 import DebugInspector from './scraper/debug-inspector.ts';
 import StepRunner from './scraper/step-runner.ts';
+import LoginPage from './scraper/pages/login-page.ts';
 
-const TOP_FRAME_NAME = 'top';
-const TOP_FRAME_URL_PART = 'TPRTDLogo.jsp';
 const WAIT_UNTIL = 'domcontentloaded';
 
 const LOG_LEVELS = {
@@ -154,35 +153,16 @@ export default class ChromeScraper {
   async login(creds: Credentials): Promise<void> {
     this.creds = creds;
     return this.runStep('login', async () => {
-      const page = this.getPage();
-
-      const loginURL = 'https://rtd.mcw.gov.cy';
+      const loginPage = new LoginPage({
+        page: this.getPage(),
+        actions: this.actions,
+        inspector: this.inspector,
+        steps: this.steps,
+        log: logStep
+      });
 
       try {
-        logStep(`Opening login page: ${loginURL}`);
-        await this.runStep('open-login-page',
-          () => page.goto(loginURL, { waitUntil: WAIT_UNTIL }), { targetUrl: loginURL });
-        logStep('Login page loaded');
-
-        const frame = await this.getTopFrame();
-        logStep(`Using frame "${frame.name()}" at ${frame.url()}`);
-        await this.logFrameInputs(frame);
-
-        logStep('Waiting for username input');
-        await this.waitForNamedInput(frame, 'h_USERNAME');
-        logStep('Typing username');
-        await this.typeNamedInput(frame, 'h_USERNAME', creds.username);
-
-        logStep('Waiting for password input');
-        await this.waitForNamedInput(frame, 'h_PASSWORD');
-        logStep('Typing password');
-        await this.typeNamedInput(frame, 'h_PASSWORD', creds.password);
-
-        logStep('Clicking login submit and waiting for navigation');
-        await this.preNavDelay();
-        await this.clickAndWaitForNavigation(frame, 'input[type="submit"][name="h_LOGIN"]');
-        logStep('Login navigation completed');
-
+        await loginPage.login(creds);
         this.isLoggedIn = true;
         log('Successfully logged in to driving exam system', 'INFO');
       } catch (error) {
@@ -459,36 +439,6 @@ export default class ChromeScraper {
     // TODO: Implement time slot clicking logic
     // This depends on the actual HTML structure of the time slots
     console.log('Time slot clicking not yet implemented');
-  }
-
-  /**
-   * Get the application frame that contains the driving exam UI.
-   */
-  async getTopFrame(): Promise<Frame> {
-    if (!this.page) {
-      throw new Error('Browser not initialized: call initBrowser() first');
-    }
-
-    const frames = this.page.frames();
-    logStep(`Available frames: ${frames.map(frame => {
-      const name = frame.name() || '<unnamed>';
-      return `${name} (${frame.url()})`;
-    }).join(', ')}`);
-
-    const frame = this.page.frames().find(pageFrame => this.isTopFrame(pageFrame));
-    if (frame) {
-      return frame;
-    }
-
-    logStep(`Waiting for frame named "${TOP_FRAME_NAME}" with URL containing "${TOP_FRAME_URL_PART}"`);
-    return this.page.waitForFrame(pageFrame => this.isTopFrame(pageFrame));
-  }
-
-  /**
-   * Check whether a Puppeteer frame is the application top frame.
-   */
-  isTopFrame(frame: Frame): boolean {
-    return frame.name() === TOP_FRAME_NAME && frame.url().includes(TOP_FRAME_URL_PART);
   }
 
   /**
