@@ -1,10 +1,10 @@
-const ChromeScraper = require('./scraper');
+import ChromeScraper from '../src/scraper.ts';
 
-async function main() {
+async function main(): Promise<void> {
   const username = process.env.SCRAPER_USERNAME;
   const password = process.env.SCRAPER_PASSWORD;
-  const centerCity = process.env.SCRAPER_CITY_CENTER
-  const carPlateNumber = process.env.SCRAPER_CAR_PLATE
+  const centerCity = process.env.SCRAPER_CITY_CENTER;
+  const carPlateNumber = process.env.SCRAPER_CAR_PLATE;
 
   if (!username || !password) {
     console.error('Please set SCRAPER_USERNAME and SCRAPER_PASSWORD environment variables');
@@ -46,22 +46,22 @@ async function main() {
     // For manual testing, you can add more steps here
     // For example, submit exam details if you have them
     const exam = {
-      centerCity: centerCity,
-      carPlateNumber: carPlateNumber
+      centerCity,
+      carPlateNumber
     };
     await scraper.submitExamDetails(exam);
     console.log('Exam details submitted!');
 
-    var currentMonth = await scraper.getCalendarMonth();
+    let currentMonth = await scraper.getCalendarMonth();
     console.log('Current calendar month:', currentMonth);
 
-    var timeSlots = await scraper.getTimeSlots();
+    let timeSlots = await scraper.getTimeSlots();
     console.log('Available time slots:', timeSlots);
 
     await scraper.goToNextCalendarMonth();
     console.log('Moved to next calendar month!');
 
-      var currentMonth = await scraper.getCalendarMonth();
+    currentMonth = await scraper.getCalendarMonth();
     console.log('Current calendar month:', currentMonth);
 
     timeSlots = await scraper.getTimeSlots();
@@ -76,4 +76,7 @@ async function main() {
   }
 }
 
-main();
+main().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

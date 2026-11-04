@@ -1,7 +1,7 @@
-const Bot = require('./bot');
-const ChromeScraper = require('./scraper');
+import Bot from './bot.ts';
+import ChromeScraper from './scraper.ts';
 
-async function main() {
+async function main(): Promise<void> {
   // Get environment variables
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) {
@@ -44,14 +44,14 @@ async function main() {
   // Handle graceful shutdown
   process.on('SIGINT', async () => {
     console.log('Shutting down...');
-    bot.stop();
+    await bot.stop();
     await scraper.close();
     process.exit(0);
   });
 
   process.on('SIGTERM', async () => {
     console.log('Shutting down...');
-    bot.stop();
+    await bot.stop();
     await scraper.close();
     process.exit(0);
   });

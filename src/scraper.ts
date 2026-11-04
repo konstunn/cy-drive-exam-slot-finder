@@ -1,5 +1,9 @@
-const puppeteer = require('puppeteer');
-const ScraperDebug = require('./scraper-debug');
+import puppeteer, { type Browser, type Page, type Frame, type ElementHandle, type EvaluateFunc } from 'puppeteer';
+import ScraperDebug, { type DebugDetails } from './scraper-debug.ts';
+import { errorMessage } from './errors.ts';
+import type { Credentials, ExamDetails, ExamTimeSlot, LogLevel, ScraperOptions } from './types.ts';
+
+type BrowserContext = Page | Frame;
 
 const TOP_FRAME_NAME = 'top';
 const TOP_FRAME_URL_PART = 'TPRTDLogo.jsp';
@@ -16,9 +20,8 @@ let currentLogLevel = LOG_LEVELS.INFO;
 
 /**
  * Set the global log level for all scraper instances.
- * @param {string} level - One of 'ERROR', 'WARN', 'INFO', 'DEBUG'
  */
-function setLogLevel(level) {
+export function setLogLevel(level: LogLevel): void {
   if (LOG_LEVELS[level] !== undefined) {
     currentLogLevel = LOG_LEVELS[level];
   }
@@ -26,24 +29,29 @@ function setLogLevel(level) {
 
 /**
  * Log a message at a specific level.
- * @param {string} message
- * @param {string} level - One of 'ERROR', 'WARN', 'INFO', 'DEBUG'
  */
-function log(message, level = 'INFO') {
-  const messageLevel = LOG_LEVELS[level] || LOG_LEVELS.INFO;
+function log(message: string, level: LogLevel = 'INFO'): void {
+  const messageLevel = LOG_LEVELS[level];
   if (messageLevel <= currentLogLevel) {
     console.log(`[scraper:${level}] ${message}`);
   }
 }
 
-function logStep(message) {
+function logStep(message: string): void {
   log(message, 'DEBUG');
 }
 
 /**
  * ChromeScraper implements slot scraping using Puppeteer
  */
-class ChromeScraper {
+export default class ChromeScraper {
+  creds: Credentials | null;
+  isLoggedIn: boolean;
+  browser: Browser | null;
+  page: Page | null;
+  debug: ScraperDebug;
+  private navDelayMs = 0;
+
   constructor() {
     this.creds = null;
     this.isLoggedIn = false;
@@ -53,17 +61,17 @@ class ChromeScraper {
   }
 
   createDebugRecorder(enabled = process.env.SCRAPER_DEBUG === '1',
-    rootDir = process.env.SCRAPER_DEBUG_DIR || 'debug') {
+    rootDir = process.env.SCRAPER_DEBUG_DIR || 'debug'): ScraperDebug {
     return new ScraperDebug({
       enabled, rootDir,
-      getSecrets: () => [this.creds?.username, this.creds?.password],
+      getSecrets: () => this.creds ? [this.creds.username, this.creds.password] : [],
       onDirectory: directory => log(`Debug files: ${directory}`, 'INFO'),
       onSnapshot: directory => logStep(`HTML snapshot: ${directory}`),
       onWarning: message => log(message, 'WARN')
     });
   }
 
-  async runStep(step, action, details = {}) {
+  async runStep<T>(step: string, action: () => Promise<T>, details: DebugDetails = {}): Promise<T> {
     await this.debug.capture(this.page, step, 'before', details);
     const started = Date.now();
     try {
@@ -75,7 +83,11 @@ class ChromeScraper {
     } catch (error) {
       await this.debug.capture(this.page, step, 'error', {
         ...details, durationMs: Date.now() - started,
-        error: { name: error?.name || 'Error', message: error?.message || String(error), stack: error?.stack }
+        error: {
+          name: error instanceof Error ? error.name : 'Error',
+          message: errorMessage(error),
+          ...(error instanceof Error && error.stack ? { stack: error.stack } : {})
+        }
       });
       throw error;
     }
@@ -83,10 +95,8 @@ class ChromeScraper {
 
   /**
    * Initialize the browser and page
-   * @param {number} timeout - Timeout in milliseconds
-   * @param {Object} options - Additional options
    */
-  async initBrowser(timeout = 60000, options = {}) {
+  async initBrowser(timeout = 60000, options: ScraperOptions = {}): Promise<void> {
     if (this.browser) {
       throw new Error('Browser already initialized: call close() before reinitializing');
     }
@@ -126,7 +136,7 @@ class ChromeScraper {
   /**
    * Small helper to wait before navigation-triggering actions when configured.
    */
-  async preNavDelay() {
+  async preNavDelay(): Promise<void> {
     if (this.navDelayMs && this.navDelayMs > 0) {
       log(`Waiting ${this.navDelayMs}ms before navigation`, 'DEBUG');
       await new Promise(r => setTimeout(r, this.navDelayMs));
@@ -136,7 +146,7 @@ class ChromeScraper {
   /**
    * Close the browser and clean up resources
    */
-  async close() {
+  async close(): Promise<void> {
     return this.runStep('close', async () => {
       if (this.browser) {
         await this.browser.close();
@@ -149,21 +159,18 @@ class ChromeScraper {
 
   /**
    * Login to the driving exam booking system
-   * @param {Credentials} creds
    */
-  async login(creds) {
+  async login(creds: Credentials): Promise<void> {
     this.creds = creds;
     return this.runStep('login', async () => {
-      if (!this.page) {
-        throw new Error('Browser not initialized: call initBrowser() first');
-      }
+      const page = this.getPage();
 
       const loginURL = 'https://rtd.mcw.gov.cy';
 
       try {
         logStep(`Opening login page: ${loginURL}`);
         await this.runStep('open-login-page',
-          () => this.page.goto(loginURL, { waitUntil: WAIT_UNTIL }), { targetUrl: loginURL });
+          () => page.goto(loginURL, { waitUntil: WAIT_UNTIL }), { targetUrl: loginURL });
         logStep('Login page loaded');
 
         const frame = await this.getTopFrame();
@@ -188,7 +195,7 @@ class ChromeScraper {
         this.isLoggedIn = true;
         log('Successfully logged in to driving exam system', 'INFO');
       } catch (error) {
-        throw new Error(`Login failed: ${error.message}`);
+        throw new Error(`Login failed: ${errorMessage(error)}`);
       }
     });
   }
@@ -196,17 +203,17 @@ class ChromeScraper {
   /**
    * Navigate to the rebooking calendar page
    */
-  async navigateToCancelRebook() {
+  async navigateToCancelRebook(): Promise<void> {
     return this.runStep('navigate-to-cancel-rebook', async () => {
-      this.checkInitializedLoggedIn();
+      const page = this.checkInitializedLoggedIn();
 
       const url = 'https://rtd.mcw.gov.cy/WebPhase1/gui/dlcalendar/CancelRebookCalendar.jsp';
 
       try {
         await this.preNavDelay();
-        await this.page.goto(url, { waitUntil: WAIT_UNTIL });
+        await page.goto(url, { waitUntil: WAIT_UNTIL });
       } catch (error) {
-        throw new Error(`Failed to navigate to calendar: ${error.message}`);
+        throw new Error(`Failed to navigate to calendar: ${errorMessage(error)}`);
       }
     }, { targetUrl: 'https://rtd.mcw.gov.cy/WebPhase1/gui/dlcalendar/CancelRebookCalendar.jsp' });
   }
@@ -214,110 +221,107 @@ class ChromeScraper {
   /**
    * Choose the existing exam to proceed with rebooking
    */
-  async chooseExistingExam() {
+  async chooseExistingExam(): Promise<void> {
     return this.runStep('choose-existing-exam', async () => {
-      this.checkInitializedLoggedIn();
+      const page = this.checkInitializedLoggedIn();
 
       try {
         logStep('Choosing existing exam');
-        logStep(`Using page at ${this.page.url()}`);
-        await this.logClickableControls(this.page, 'page');
+        logStep(`Using page at ${page.url()}`);
+        await this.logClickableControls(page, 'page');
 
         logStep('Waiting for existing exam Next button');
-        const nextButton = await this.waitForInputButtonByValue(this.page, 'Next');
+        const nextButton = await this.waitForInputButtonByValue(page, 'Next');
         logStep('Clicking existing exam Next button and waiting for navigation');
         await this.preNavDelay();
-        await this.clickElementAndWaitForNavigation(this.page, nextButton);
+        await this.clickElementAndWaitForNavigation(page, nextButton);
         logStep('Existing exam navigation completed');
       } catch (error) {
-        throw new Error(`Failed to choose existing exam: ${error.message}`);
+        throw new Error(`Failed to choose existing exam: ${errorMessage(error)}`);
       }
     }, { expected: 'input[type=button] with value Next' });
   }
 
   /**
    * Get the list of available exam city centers
-   * @returns {Promise<string[]>}
    */
-  async getExamCityCenters() {
+  async getExamCityCenters(): Promise<string[]> {
     return this.runStep('get-exam-city-centers', async () => {
-      this.checkInitializedLoggedIn();
+      const page = this.checkInitializedLoggedIn();
 
       try {
-        logStep(`Getting exam city centers from page at ${this.page.url()}`);
+        logStep(`Getting exam city centers from page at ${page.url()}`);
 
-        await this.page.waitForSelector('select[name="h_centre"]');
+        await page.waitForSelector('select[name="h_centre"]');
 
-        const centers = await this.page.evaluate(() => {
+        const centers = await page.evaluate(() => {
           const options = Array.from(document.querySelectorAll('select[name="h_centre"] option'));
-          return options.map(option => option.textContent.trim());
+          return options.map(option => (option.textContent ?? '').trim());
         });
 
         return centers;
       } catch (error) {
-        throw new Error(`Failed to get exam city centers: ${error.message}`);
+        throw new Error(`Failed to get exam city centers: ${errorMessage(error)}`);
       }
     }, { selector: 'select[name="h_centre"]' });
   }
 
   /**
    * Submit exam details to search for available slots
-   * @param {ExamDetails} exam
    */
-  async submitExamDetails(exam) {
+  async submitExamDetails(exam: ExamDetails): Promise<void> {
     return this.runStep('submit-exam-details', async () => {
-      this.checkInitializedLoggedIn();
+      const page = this.checkInitializedLoggedIn();
 
       if (!exam.centerCity || !exam.carPlateNumber) {
         throw new Error('Center city and car plate number must be provided');
       }
 
       try {
-        logStep(`Submitting exam details on page at ${this.page.url()}`);
-        await this.logClickableControls(this.page, 'page');
+        logStep(`Submitting exam details on page at ${page.url()}`);
+        await this.logClickableControls(page, 'page');
 
-        await this.page.waitForSelector('select[name="h_centre"]');
-        await this.logSelectOptions(this.page, 'select[name="h_centre"]');
-        await this.selectByValueOrText(this.page, 'select[name="h_centre"]', exam.centerCity);
+        await page.waitForSelector('select[name="h_centre"]');
+        await this.logSelectOptions(page, 'select[name="h_centre"]');
+        await this.selectByValueOrText(page, 'select[name="h_centre"]', exam.centerCity);
 
-        await this.page.waitForSelector('input[name="h_vrm"]');
-        await this.page.type('input[name="h_vrm"]', exam.carPlateNumber);
+        await page.waitForSelector('input[name="h_vrm"]');
+        await page.type('input[name="h_vrm"]', exam.carPlateNumber);
 
         logStep('Clicking submitBtn input and waiting for navigation');
         await this.preNavDelay();
-        await this.clickAndWaitForNavigation(this.page, 'input[type="button"][id="submitBtn"]');
+        await this.clickAndWaitForNavigation(page, 'input[type="button"][id="submitBtn"]');
       } catch (error) {
-        throw new Error(`Failed to submit exam center and plate: ${error.message}`);
+        throw new Error(`Failed to submit exam center and plate: ${errorMessage(error)}`);
       }
     }, { selector: 'input[type="button"][id="submitBtn"]' });
   }
 
   /**
    * Get available time slots
-   * @returns {Promise<Date[]>}
    */
-  async getTimeSlots() {
+  async getTimeSlots(): Promise<ExamTimeSlot[]> {
     return this.runStep('get-time-slots', async () => {
-      this.checkInitializedLoggedIn();
+      const page = this.checkInitializedLoggedIn();
 
       try {
-        logStep(`Getting time slots from page at ${this.page.url()}`);
+        logStep(`Getting time slots from page at ${page.url()}`);
 
         // Wait for the calendar or slot container to appear; selector may vary by page
         // If `.time-slot` isn't present yet, wait a short time for it to arrive
         try {
-          await this.page.waitForSelector('.time-slot', { timeout: 3000 });
+          await page.waitForSelector('.time-slot', { timeout: 3000 });
         } catch (e) {
           // it's OK if there are no time slots — we'll return an empty array
         }
 
         // Gather raw slot nodes that have a calendar background image (all color variants)
-        const rawSlots = await this.retryEvaluate(this.page, () => {
+        const rawSlots = await this.retryEvaluate(page, () => {
           const tds = Array.from(document.querySelectorAll('td[background*="/WebPhase1/images/drivercalendar/"]'));
           return tds.map(td => {
             const bg = td.getAttribute('background') || '';
             const h5 = td.querySelector('h5');
-            const timeText = h5 ? h5.textContent.trim() : null;
+            const timeText = h5 ? (h5.textContent ?? '').trim() : null;
             const a = td.querySelector('a');
             const href = a ? a.getAttribute('href') : null;
             return { background: bg, timeText, href };
@@ -325,7 +329,7 @@ class ChromeScraper {
         });
 
         // Parse each raw slot into { datetime, available }
-        const slots = [];
+        const slots: ExamTimeSlot[] = [];
 
         // Get current calendar header (may include year) to help with parsing
         const header = await this.getCalendarMonth();
@@ -339,7 +343,7 @@ class ChromeScraper {
           // Prefer explicit calendarday + examtime from href if present
           if (s.href) {
             try {
-              const url = new URL(s.href, this.page.url());
+              const url = new URL(s.href, page.url());
               const params = url.searchParams;
               const examtime = params.get('examtime') || params.get('time') || null;
               const calendarday = params.get('calendarday') || params.get('calendardate') || null;
@@ -347,16 +351,18 @@ class ChromeScraper {
               if (calendarday && examtime) {
                 // calendarday expected as DD/MM/YY or DD/MM/YYYY
                 const parts = calendarday.split('/').map(p => p.trim());
-                if (parts.length === 3) {
-                  let day = parseInt(parts[0], 10);
-                  let month = parseInt(parts[1], 10) - 1;
-                  let year = parseInt(parts[2], 10);
+                const [dayText, monthText, yearText] = parts;
+                if (parts.length === 3 && dayText !== undefined && monthText !== undefined && yearText !== undefined) {
+                  const day = parseInt(dayText, 10);
+                  const month = parseInt(monthText, 10) - 1;
+                  let year = parseInt(yearText, 10);
                   if (year < 100) year += 2000;
 
                   // examtime might include trailing + or spaces
-                  const timeMatch = String(examtime).match(/(\d{1,2}:\d{2})/);
-                  if (timeMatch) {
-                    const [hh, mm] = timeMatch[1].split(':').map(n => parseInt(n, 10));
+                  const timeMatch = String(examtime).match(/(\d{1,2}):(\d{2})/);
+                  if (timeMatch?.[1] && timeMatch[2]) {
+                    const hh = parseInt(timeMatch[1], 10);
+                    const mm = parseInt(timeMatch[2], 10);
                     datetime = new Date(year, month, day, hh, mm);
                   } else {
                     datetime = new Date(year, month, day);
@@ -370,13 +376,14 @@ class ChromeScraper {
 
           // If we couldn't parse a full date, try to parse timeText and guess date using header/year
           if (!datetime && s.timeText) {
-            const timeMatch = String(s.timeText).match(/(\d{1,2}:\d{2})/);
-            if (timeMatch) {
-              const [hh, mm] = timeMatch[1].split(':').map(n => parseInt(n, 10));
+            const timeMatch = String(s.timeText).match(/(\d{1,2}):(\d{2})/);
+            if (timeMatch?.[1] && timeMatch[2]) {
+              const hh = parseInt(timeMatch[1], 10);
+              const mm = parseInt(timeMatch[2], 10);
               // try to derive year from header
               let year = (new Date()).getFullYear();
               const yearMatch = String(header || '').match(/(20\d{2}|\d{4}|\d{2})/);
-              if (yearMatch) {
+              if (yearMatch?.[1]) {
                 let y = parseInt(yearMatch[1], 10);
                 if (y < 100) y += 2000;
                 if (y >= 1970) year = y;
@@ -392,16 +399,15 @@ class ChromeScraper {
 
         return slots;
       } catch (error) {
-        throw new Error(`Failed to get time slots: ${error.message}`);
+        throw new Error(`Failed to get time slots: ${errorMessage(error)}`);
       }
     }, { selector: 'td[background*="/WebPhase1/images/drivercalendar/"]' });
   }
 
   /**
    * Return only available time slots (filters result of getTimeSlots)
-   * @returns {Promise<Array<{datetime: Date|null, available: boolean}>>}
    */
-  async getAvailableTimeSlots() {
+  async getAvailableTimeSlots(): Promise<ExamTimeSlot[]> {
     return this.runStep('get-available-time-slots', async () => {
       const slots = await this.getTimeSlots();
       return Array.isArray(slots) ? slots.filter(s => s && s.available) : [];
@@ -411,53 +417,52 @@ class ChromeScraper {
   /**
    * Move the calendar to the next month.
    */
-  async goToNextCalendarMonth() {
+  async goToNextCalendarMonth(): Promise<void> {
     return this.runStep('next-calendar-month', async () => {
-      this.checkInitializedLoggedIn();
+      const page = this.checkInitializedLoggedIn();
 
       try {
         logStep('Going to next calendar month');
-        await this.logCalendarNavigationControls(this.page);
-        await this.logCurrentCalendarMonth(this.page);
+        await this.logCalendarNavigationControls(page);
+        await this.logCurrentCalendarMonth(page);
 
-        const nextMonthButtonHandle = await this.waitForCalendarNextMonthButton(this.page);
+        const nextMonthButtonHandle = await this.waitForCalendarNextMonthButton(page);
 
         // get current month label to detect change
-        const before = await this.getCalendarMonth(this.page);
+        const before = await this.getCalendarMonth(page);
 
         // Click and wait for calendar header to change
         await this.preNavDelay();
-        await nextMonthButtonHandle.asElement().click();
+        await nextMonthButtonHandle.click();
 
         // Wait until calendar header text changes (or timeout)
         try {
-          await this.page.waitForFunction((prev) => {
+          await page.waitForFunction((prev) => {
             const header = document.querySelector('#calendarHeader');
             if (!header) return false;
-            return header.textContent.replace(/\s+/g, ' ').trim() !== prev;
+            return (header.textContent ?? '').replace(/\s+/g, ' ').trim() !== prev;
           }, {}, before);
         } catch (e) {
           // fallback to waiting for network idle or complete state
           try {
-            await this.page.waitForFunction(() => document.readyState === 'complete', { timeout: 5000 });
+            await page.waitForFunction(() => document.readyState === 'complete', { timeout: 5000 });
           } catch (_) {
             // ignore
           }
         }
 
         logStep('Moved to next calendar month (attempted)');
-        await this.logCurrentCalendarMonth(this.page);
+        await this.logCurrentCalendarMonth(page);
       } catch (error) {
-        throw new Error(`Failed to go to next calendar month: ${error.message}`);
+        throw new Error(`Failed to go to next calendar month: ${errorMessage(error)}`);
       }
     }, { expected: 'Next month calendar image button' });
   }
 
   /**
    * Click on a specific time slot
-   * @param {Date} slot
    */
-  async clickTimeSlot(slot) {
+  async clickTimeSlot(slot: ExamTimeSlot): Promise<void> {
     this.checkInitializedLoggedIn();
 
     // TODO: Implement time slot clicking logic
@@ -468,7 +473,7 @@ class ChromeScraper {
   /**
    * Get the application frame that contains the driving exam UI.
    */
-  async getTopFrame() {
+  async getTopFrame(): Promise<Frame> {
     if (!this.page) {
       throw new Error('Browser not initialized: call initBrowser() first');
     }
@@ -490,19 +495,15 @@ class ChromeScraper {
 
   /**
    * Check whether a Puppeteer frame is the application top frame.
-   * @param {import('puppeteer').Frame} frame
-   * @returns {boolean}
    */
-  isTopFrame(frame) {
+  isTopFrame(frame: Frame): boolean {
     return frame.name() === TOP_FRAME_NAME && frame.url().includes(TOP_FRAME_URL_PART);
   }
 
   /**
    * Wait for an input by its name attribute.
-   * @param {import('puppeteer').Frame} frame
-   * @param {string} name
    */
-  async waitForNamedInput(frame, name) {
+  async waitForNamedInput(frame: Frame, name: string): Promise<void> {
     return this.runStep('wait-for-input', async () => {
       try {
         await frame.waitForFunction(inputName => {
@@ -517,11 +518,8 @@ class ChromeScraper {
 
   /**
    * Type into an input by its name attribute.
-   * @param {import('puppeteer').Frame} frame
-   * @param {string} name
-   * @param {string} value
    */
-  async typeNamedInput(frame, name, value) {
+  async typeNamedInput(frame: Frame, name: string, value: string): Promise<void> {
     return this.runStep('type-input', async () => {
       const input = await frame.$(`input[name="${name}"]`);
       if (!input) {
@@ -534,9 +532,8 @@ class ChromeScraper {
 
   /**
    * Log visible input names in the current frame for debugging.
-   * @param {import('puppeteer').Frame} frame
    */
-  async logFrameInputs(frame) {
+  async logFrameInputs(frame: Frame): Promise<void> {
     const inputs = await frame.evaluate(() => {
       return Array.from(document.querySelectorAll('input')).map(input => {
         const type = input.getAttribute('type') || '<no type>';
@@ -552,16 +549,14 @@ class ChromeScraper {
 
   /**
    * Log buttons and submit inputs in the current frame for debugging.
-   * @param {import('puppeteer').Frame|import('puppeteer').Page} context
-   * @param {string} label
    */
-  async logClickableControls(context, label = 'frame') {
+  async logClickableControls(context: BrowserContext, label = 'frame'): Promise<void> {
     const controls = await context.evaluate(() => {
       const buttons = Array.from(document.querySelectorAll('button')).map(button => {
         const type = button.getAttribute('type') || '<no type>';
         const name = button.getAttribute('name') || '<no name>';
         const id = button.id || '<no id>';
-        const text = button.textContent.trim() || '<no text>';
+        const text = (button.textContent ?? '').trim() || '<no text>';
 
         return `button type=${type} name=${name} id=${id} text=${text}`;
       });
@@ -574,7 +569,7 @@ class ChromeScraper {
         return `submit name=${name} id=${id} value=${value}`;
       });
 
-      const buttonInputs = Array.from(document.querySelectorAll('input[type="button"]')).map(input => {
+      const buttonInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="button"]')).map(input => {
         const name = input.getAttribute('name') || '<no name>';
         const id = input.id || '<no id>';
         const value = input.getAttribute('value') || '<no value>';
@@ -591,18 +586,16 @@ class ChromeScraper {
 
   /**
    * Log select options for debugging form values.
-   * @param {import('puppeteer').Frame|import('puppeteer').Page} context
-   * @param {string} selector
    */
-  async logSelectOptions(context, selector) {
+  async logSelectOptions(context: BrowserContext, selector: string): Promise<void> {
     const options = await context.evaluate(selectSelector => {
-      const select = document.querySelector(selectSelector);
+      const select = document.querySelector<HTMLSelectElement>(selectSelector);
       if (!select) {
         return null;
       }
 
       return Array.from(select.options).map(option => {
-        return `value=${option.value} text=${option.textContent.trim()}`;
+        return `value=${option.value} text=${(option.textContent ?? '').trim()}`;
       });
     }, selector);
 
@@ -611,21 +604,18 @@ class ChromeScraper {
 
   /**
    * Select an option by value first, then by visible text.
-   * @param {import('puppeteer').Frame|import('puppeteer').Page} context
-   * @param {string} selector
-   * @param {string} valueOrText
    */
-  async selectByValueOrText(context, selector, valueOrText) {
+  async selectByValueOrText(context: BrowserContext, selector: string, valueOrText: string): Promise<void> {
     return this.runStep('select-option', async () => {
       const selectedValue = await context.evaluate((selectSelector, expected) => {
-        const select = document.querySelector(selectSelector);
+        const select = document.querySelector<HTMLSelectElement>(selectSelector);
         if (!select) {
           return null;
         }
 
         const expectedText = String(expected).trim();
         const option = Array.from(select.options).find(item => {
-          return item.value === expectedText || item.textContent.trim() === expectedText;
+          return item.value === expectedText || (item.textContent ?? '').trim() === expectedText;
         });
 
         if (!option) {
@@ -647,19 +637,18 @@ class ChromeScraper {
 
   /**
    * Retry a page/frame evaluate when transient navigation destroys the execution context.
-   * @param {import('puppeteer').Page|import('puppeteer').Frame} context
-   * @param {Function} fn
-   * @param  {...any} args
    */
-  async retryEvaluate(context, fn, ...args) {
+  async retryEvaluate<Params extends unknown[], Func extends EvaluateFunc<Params>>(
+    context: BrowserContext, fn: Func, ...args: Params
+  ): Promise<Awaited<ReturnType<Func>>> {
     const maxAttempts = 3;
-    const delay = ms => new Promise(r => setTimeout(r, ms));
+    const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    for (let attempt = 1; ; attempt++) {
       try {
         return await context.evaluate(fn, ...args);
       } catch (err) {
-        const msg = (err && err.message) || '';
+        const msg = errorMessage(err);
         if (msg.includes('Execution context was destroyed') || msg.includes('Protocol error') || attempt === maxAttempts) {
           if (attempt === maxAttempts) throw err;
           await delay(500 * attempt);
@@ -672,9 +661,8 @@ class ChromeScraper {
 
   /**
    * Log calendar navigation images for debugging.
-   * @param {import('puppeteer').Frame|import('puppeteer').Page} context
    */
-  async logCalendarNavigationControls(context) {
+  async logCalendarNavigationControls(context: BrowserContext): Promise<void> {
     const controls = await context.evaluate(() => {
       return Array.from(document.querySelectorAll('img')).map(image => {
         const title = image.getAttribute('title') || '<no title>';
@@ -690,9 +678,8 @@ class ChromeScraper {
 
   /**
    * Find the calendar next-month image button.
-   * @param {import('puppeteer').Frame|import('puppeteer').Page} context
    */
-  async waitForCalendarNextMonthButton(context) {
+  async waitForCalendarNextMonthButton(context: BrowserContext): Promise<ElementHandle<HTMLImageElement>> {
     await context.waitForFunction(() => {
       return Array.from(document.querySelectorAll('img')).some(image => {
         const title = image.getAttribute('title') || '';
@@ -706,7 +693,7 @@ class ChromeScraper {
     });
 
     return context.evaluateHandle(() => {
-      return Array.from(document.querySelectorAll('img')).find(image => {
+      const image = Array.from(document.querySelectorAll('img')).find(image => {
         const title = image.getAttribute('title') || '';
         const src = image.getAttribute('src') || '';
         const onclick = image.getAttribute('onclick') || '';
@@ -715,15 +702,15 @@ class ChromeScraper {
           || src.includes('dlcalendar_nextmonth_black.gif')
           || onclick.includes('addMonths(event, 1)');
       });
+      if (!image) throw new Error('Next month calendar button disappeared');
+      return image;
     });
   }
 
   /**
    * Get the current calendar month label.
-   * @param {import('puppeteer').Frame|import('puppeteer').Page} context
-   * @returns {Promise<string|null>}
    */
-  async getCalendarMonth(context = this.page) {
+  async getCalendarMonth(context: BrowserContext = this.getPage()): Promise<string | null> {
     return this.runStep('get-calendar-month', async () => {
       try {
         await context.waitForSelector('#calendarHeader', { timeout: 5000 });
@@ -735,47 +722,44 @@ class ChromeScraper {
       return this.retryEvaluate(context, () => {
         const header = document.querySelector('#calendarHeader');
         if (!header) return null;
-        return header.textContent.replace(/\s+/g, ' ').trim();
+        return (header.textContent ?? '').replace(/\s+/g, ' ').trim();
       });
     }, { selector: '#calendarHeader' });
   }
 
   /**
    * Log the current calendar month label.
-   * @param {import('puppeteer').Frame|import('puppeteer').Page} context
    */
-  async logCurrentCalendarMonth(context = this.page) {
+  async logCurrentCalendarMonth(context: BrowserContext = this.getPage()): Promise<void> {
     const month = await this.getCalendarMonth(context);
     logStep(`Calendar month: ${month || '<not found>'}`);
   }
 
   /**
    * Find an input button by its displayed value.
-   * @param {import('puppeteer').Frame|import('puppeteer').Page} context
-   * @param {string} value
    */
-  async waitForInputButtonByValue(context, value) {
+  async waitForInputButtonByValue(context: BrowserContext, value: string): Promise<ElementHandle<HTMLInputElement>> {
     return this.runStep('wait-for-button', async () => {
       await context.waitForFunction(expectedValue => {
-        return Array.from(document.querySelectorAll('input[type="button"]')).some(input => {
+        return Array.from(document.querySelectorAll<HTMLInputElement>('input[type="button"]')).some(input => {
           return input.value.trim() === expectedValue;
         });
       }, {}, value);
 
       return context.evaluateHandle(expectedValue => {
-        return Array.from(document.querySelectorAll('input[type="button"]')).find(input => {
+        const input = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="button"]')).find(input => {
           return input.value.trim() === expectedValue;
         });
+        if (!input) throw new Error(`Button disappeared: ${expectedValue}`);
+        return input;
       }, value);
     }, { expectedValue: value });
   }
 
   /**
    * Click a selector inside a frame and wait for that frame to navigate.
-   * @param {import('puppeteer').Frame} frame
-   * @param {string} selector
    */
-  async clickAndWaitForNavigation(frame, selector) {
+  async clickAndWaitForNavigation(frame: BrowserContext, selector: string): Promise<void> {
     return this.runStep('click-and-navigate', async () => {
       await Promise.all([
         frame.waitForNavigation({ waitUntil: WAIT_UNTIL }),
@@ -786,10 +770,8 @@ class ChromeScraper {
 
   /**
    * Click an element and wait for the current page to navigate.
-   * @param {import('puppeteer').Page} page
-   * @param {import('puppeteer').ElementHandle} element
    */
-  async clickElementAndWaitForNavigation(page, element) {
+  async clickElementAndWaitForNavigation(page: Page, element: ElementHandle<Element>): Promise<void> {
     return this.runStep('click-element-and-navigate', async () => {
       await Promise.all([
         page.waitForNavigation({ waitUntil: WAIT_UNTIL }),
@@ -799,18 +781,21 @@ class ChromeScraper {
   }
 
   /**
-   * Check if browser is initialized and user is logged in
+   * Return the active page, or fail if the browser has not been initialized.
    */
-  checkInitializedLoggedIn() {
+  getPage(): Page {
     if (!this.page) {
       throw new Error('Browser not initialized: call initBrowser() first');
     }
 
+    return this.page;
+  }
+
+  checkInitializedLoggedIn(): Page {
+    const page = this.getPage();
     if (!this.isLoggedIn) {
       throw new Error('Not logged in: please call login() first');
     }
+    return page;
   }
 }
-
-module.exports = ChromeScraper;
-module.exports.setLogLevel = setLogLevel;

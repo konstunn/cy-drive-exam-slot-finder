@@ -1,23 +1,6 @@
 # Driving Exam Slot Finder Bot
 
-A Telegram bot for finding available driving exam slots, built with Node.js.
-
-## Project Structure
-
-This project follows a modular architecture with separated concerns:
-
-```
-.
-├── src/                    # Source code
-│   ├── index.js           # Main application entry point
-│   ├── bot.js             # Telegram bot logic
-│   ├── scraper.js         # Web scraping logic using Puppeteer
-│   ├── test-scraper.js    # Test script for scraper functionality
-│   └── types.js           # Shared types and documentation
-├── package.json           # Node.js dependencies and scripts
-├── package-lock.json      # Dependency lock file
-└── README.md             # This file
-```
+A Telegram bot for finding available driving exam slots, built with TypeScript and Node.js.
 
 ## Development Setup
 
@@ -55,21 +38,16 @@ cp .env.example .env
 # Edit .env with your credentials
 ```
 
-## Architecture
-
-### Components
-
-1. **src/index.js** - Application entry point, dependency injection
-2. **src/bot.js** - Business logic for Telegram bot operations
-3. **src/scraper.js** - Business logic for web scraping using Puppeteer
-4. **src/types.js** - Shared types and JSDoc documentation
-
-### Dependencies
+## Dependencies
 
 - **node-telegram-bot-api**: For Telegram bot communication
 - **puppeteer**: For headless browser automation and scraping
 
 ## Building and Running
+
+Node.js runs the `.ts` files directly using its built-in
+[type stripping](https://nodejs.org/api/typescript.html); no build step is needed.
+Runtime execution does not check types. Run `npm run check` before committing.
 
 ### Run
 
@@ -167,23 +145,40 @@ The bot currently supports:
 
 ### Adding New Features
 
-1. Define types in `src/types.js` using JSDoc
+1. Define shared types in `src/types.ts` and module-specific types beside their implementation
 2. Implement business logic in appropriate `src/` module
-3. Update `src/index.js` for dependency injection
-4. Add tests in `tests/` using the built-in `node:test` runner
+3. Update `src/index.ts` for dependency injection
+4. Add `.test.ts` tests in `tests/` using the built-in `node:test` runner
+5. Run `npm run check` (type checking followed by unit tests)
 
 ### Testing
 
 ```bash
+npm run typecheck
 npm test
+# Or both:
+npm run check
 ```
 
 To verify HTML diagnostics with Chrome against a local fixture (no site login):
 
 ```bash
-node tests/scraper-debug.browser.js
+npm run test:browser
 ```
 
 ### Code Style
 
-This project uses standard JavaScript conventions. Consider using ESLint for code quality.
+The application, manual runner and tests use strict TypeScript, including
+`noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. Use explicit `.ts`
+extensions for local imports and `import type` for type-only dependencies.
+`erasableSyntaxOnly` keeps the syntax compatible with direct Node.js execution;
+avoid enums and constructor parameter properties that require compilation.
+
+Slot results have the shape `{ datetime: Date | null, available: boolean }`.
+Handle missing dates and nullable browser state explicitly. Caught errors have
+type `unknown`; narrow them before accessing their properties.
+
+GitHub Actions runs `npm run check` on pushes and pull requests. Browser tests
+run separately with `npm run test:browser` and use local fixtures, without login.
+The standalone `finder.js` userscript remains JavaScript for direct installation
+in a browser and is outside the application's TypeScript check.

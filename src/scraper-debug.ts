@@ -1,23 +1,90 @@
-const fs = require('node:fs/promises');
-const path = require('node:path');
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import type { ScreenshotOptions } from 'puppeteer';
+import { errorMessage } from './errors.ts';
+
+export type DebugPhase = 'before' | 'after' | 'error';
+
+export interface DebugDetails {
+  durationMs?: number;
+  error?: { name?: string; message: string; stack?: string };
+  selector?: string;
+  targetUrl?: string;
+  frame?: string;
+  inputName?: string;
+  expected?: string;
+  expectedValue?: string;
+}
+
+export interface FrameSnapshot {
+  name: string;
+  url: string;
+  file?: string;
+  error?: string;
+}
+
+export interface DebugEntry extends DebugDetails {
+  timestamp: string;
+  step: string;
+  phase: DebugPhase;
+  snapshot: string;
+  url: string | null;
+  frames: FrameSnapshot[];
+  screenshot?: string;
+  screenshotError?: string;
+}
+
+// Only the browser capabilities used by capture are required. Real Puppeteer
+// objects and small in-memory test fixtures both implement this contract.
+interface SnapshotMask {
+  evaluate(action: (style: HTMLStyleElement) => void): Promise<void>;
+  dispose(): Promise<void>;
+}
+
+export interface SnapshotFrame {
+  name(): string;
+  url(): string;
+  evaluate(serialize: () => string): Promise<string>;
+  evaluateHandle(createMask: () => HTMLStyleElement): Promise<SnapshotMask>;
+}
+
+export interface SnapshotPage {
+  isClosed(): boolean;
+  url(): string;
+  mainFrame(): SnapshotFrame;
+  frames(): SnapshotFrame[];
+  screenshot(options: ScreenshotOptions): Promise<unknown>;
+}
+
+interface DebugOptions {
+  enabled?: boolean;
+  rootDir?: string;
+  getSecrets?: () => readonly string[];
+  onDirectory?: (directory: string) => void;
+  onSnapshot?: (directory: string) => void;
+  onWarning?: (message: string) => void;
+}
 
 // Runs in the browser. Clone the DOM so capturing live form state never changes it.
-function serializeDocument() {
+function serializeDocument(): string {
   const clone = document.documentElement.cloneNode(true);
-  const controls = document.querySelectorAll('input, textarea, select');
-  const copies = clone.querySelectorAll('input, textarea, select');
+  if (!(clone instanceof HTMLElement)) throw new Error('Document root is not an HTML element');
+  type Control = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+  const controls = document.querySelectorAll<Control>('input, textarea, select');
+  const copies = clone.querySelectorAll<Control>('input, textarea, select');
   controls.forEach((control, index) => {
     const copy = copies[index];
+    if (!copy) return;
     const sensitive = control.type === 'password'
       || /password|h_USERNAME/i.test(`${control.name} ${control.id}`);
-    if (control.tagName === 'INPUT') {
+    if (control instanceof HTMLInputElement) {
       copy.setAttribute('value', sensitive ? '[REDACTED]' : control.value);
       copy.toggleAttribute('checked', control.checked);
     } else if (control.tagName === 'TEXTAREA') {
       copy.textContent = sensitive ? '[REDACTED]' : control.value;
-    } else {
+    } else if (control instanceof HTMLSelectElement && copy instanceof HTMLSelectElement) {
       Array.from(copy.options).forEach((option, optionIndex) => {
-        option.toggleAttribute('selected', control.options[optionIndex].selected);
+        option.toggleAttribute('selected', control.options[optionIndex]?.selected ?? false);
       });
     }
   });
@@ -32,12 +99,12 @@ function serializeDocument() {
   return doctype + clone.outerHTML;
 }
 
-async function withTimeout(promise, milliseconds) {
-  let timer;
+async function withTimeout<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       promise,
-      new Promise((_, reject) => {
+      new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error('Debug capture timed out')), milliseconds);
       })
     ]);
@@ -46,9 +113,18 @@ async function withTimeout(promise, milliseconds) {
   }
 }
 
-class ScraperDebug {
+export default class ScraperDebug {
+  readonly enabled: boolean;
+  readonly rootDir: string;
+  readonly getSecrets: () => readonly string[];
+  readonly onDirectory: (directory: string) => void;
+  readonly onSnapshot: (directory: string) => void;
+  readonly onWarning: (message: string) => void;
+  directory: string | null;
+  private sequence: number;
+
   constructor({ enabled = false, rootDir = 'debug', getSecrets = () => [],
-    onDirectory = () => {}, onSnapshot = () => {}, onWarning = () => {} } = {}) {
+    onDirectory = () => {}, onSnapshot = () => {}, onWarning = () => {} }: DebugOptions = {}) {
     this.enabled = enabled;
     this.rootDir = rootDir;
     this.getSecrets = getSecrets;
@@ -59,9 +135,9 @@ class ScraperDebug {
     this.sequence = 0;
   }
 
-  redact(value) {
+  redact(value: unknown): string {
     let text = String(value);
-    const variants = new Set();
+    const variants = new Set<string>();
     for (const secret of this.getSecrets().filter(Boolean)) {
       const raw = String(secret);
       const html = raw.replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -78,8 +154,8 @@ class ScraperDebug {
     return text;
   }
 
-  async screenshot(page, frames, filename) {
-    const masks = [];
+  async screenshot(page: SnapshotPage, frames: SnapshotFrame[], filename: `${string}.png`): Promise<void> {
+    const masks: SnapshotMask[] = [];
     try {
       for (const frame of frames) {
         const mask = await withTimeout(frame.evaluateHandle(() => {
@@ -108,7 +184,8 @@ class ScraperDebug {
   }
 
   // Diagnostic failures are contained here and never replace a scraping error.
-  async capture(page, step, phase, details = {}) {
+  async capture(page: SnapshotPage | null, step: string, phase: DebugPhase,
+    details: DebugDetails = {}): Promise<string | undefined> {
     if (!this.enabled) return;
     try {
       if (!this.directory) {
@@ -121,7 +198,7 @@ class ScraperDebug {
       const snapshot = `${String(++this.sequence).padStart(3, '0')}-${slug}-${phase}`;
       const directory = path.join(this.directory, snapshot);
       await fs.mkdir(directory, { mode: 0o700 });
-      const entry = {
+      const entry: DebugEntry = {
         timestamp: new Date().toISOString(), step, phase, snapshot,
         url: null, ...details, frames: []
       };
@@ -130,7 +207,7 @@ class ScraperDebug {
         const mainFrame = page.mainFrame();
         const frames = [mainFrame, ...page.frames().filter(frame => frame !== mainFrame)];
         for (const [index, frame] of frames.entries()) {
-          const info = { name: frame.name(), url: frame.url() };
+          const info: FrameSnapshot = { name: frame.name(), url: frame.url() };
           entry.frames.push(info);
           try {
             const html = await withTimeout(frame.evaluate(serializeDocument), 3000);
@@ -138,15 +215,15 @@ class ScraperDebug {
             await fs.writeFile(path.join(directory, filename), this.redact(html), { mode: 0o600 });
             info.file = filename;
           } catch (error) {
-            info.error = error.message;
+            info.error = errorMessage(error);
           }
         }
         if (phase === 'error') {
           try {
-            await this.screenshot(page, frames, path.join(directory, 'screenshot.png'));
+            await this.screenshot(page, frames, `${directory}${path.sep}screenshot.png`);
             entry.screenshot = 'screenshot.png';
           } catch (error) {
-            entry.screenshotError = error.message;
+            entry.screenshotError = errorMessage(error);
           }
         }
       }
@@ -156,9 +233,7 @@ class ScraperDebug {
       this.onSnapshot(directory);
       return directory;
     } catch (error) {
-      this.onWarning(this.redact(`Could not save debug snapshot: ${error.message}`));
+      this.onWarning(this.redact(`Could not save debug snapshot: ${errorMessage(error)}`));
     }
   }
 }
-
-module.exports = ScraperDebug;

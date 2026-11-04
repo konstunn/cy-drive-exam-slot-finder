@@ -1,18 +1,18 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs/promises');
-const os = require('node:os');
-const path = require('node:path');
-const { test } = require('node:test');
-const ScraperDebug = require('../src/scraper-debug');
-const ChromeScraper = require('../src/scraper');
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { test, type TestContext } from 'node:test';
+import ScraperDebug, { type SnapshotFrame, type SnapshotPage, type DebugEntry } from '../src/scraper-debug.ts';
+import ChromeScraper from '../src/scraper.ts';
 
-async function tempDirectory(t) {
+async function tempDirectory(t: TestContext): Promise<string> {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'scraper-debug-test-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   return directory;
 }
 
-function frame(html, name = '', url = 'https://fixture.invalid/') {
+function frame(html: string, name = '', url = 'https://fixture.invalid/'): SnapshotFrame {
   return {
     name: () => name,
     url: () => url,
@@ -21,19 +21,23 @@ function frame(html, name = '', url = 'https://fixture.invalid/') {
   };
 }
 
-function page(frames) {
+function page(frames: [SnapshotFrame, ...SnapshotFrame[]]): SnapshotPage {
   return {
     isClosed: () => false,
     url: () => frames[0].url(),
     mainFrame: () => frames[0],
     frames: () => frames,
-    screenshot: async ({ path: filename }) => fs.writeFile(filename, 'test screenshot')
+    screenshot: async ({ path: filename }) => {
+      assert.ok(filename);
+      await fs.writeFile(filename, 'test screenshot');
+    }
   };
 }
 
-async function entries(recorder) {
+async function entries(recorder: ScraperDebug): Promise<DebugEntry[]> {
+  assert.ok(recorder.directory);
   const journal = await fs.readFile(path.join(recorder.directory, 'steps.jsonl'), 'utf8');
-  return journal.trim().split('\n').map(line => JSON.parse(line));
+  return journal.trim().split('\n').map(line => JSON.parse(line) as DebugEntry);
 }
 
 test('disabled capture creates no files', async (t) => {
@@ -54,13 +58,16 @@ test('captures full page and iframe HTML, journal phases and separate run direct
   await recorder.capture(browserPage, 'navigate', 'after', { durationMs: 50, selector: '#next' });
   const events = await entries(recorder);
   assert.deepEqual(events.map(event => event.phase), ['before', 'after']);
-  assert.equal(events[1].durationMs, 50);
-  assert.equal(events[1].selector, '#next');
-  assert.equal(events[1].frames[1].name, 'content');
-  const directory = path.join(recorder.directory, events[1].snapshot);
+  const after = events[1];
+  assert.ok(after);
+  assert.ok(recorder.directory);
+  assert.equal(after.durationMs, 50);
+  assert.equal(after.selector, '#next');
+  assert.equal(after.frames[1]?.name, 'content');
+  const directory = path.join(recorder.directory, after.snapshot);
   assert.match(await fs.readFile(path.join(directory, 'page.html'), 'utf8'), /<iframe/);
   assert.match(await fs.readFile(path.join(directory, 'frame-01.html'), 'utf8'), /Nested frame content/);
-  assert.equal(events[1].screenshot, undefined);
+  assert.equal(after.screenshot, undefined);
 
   const secondRun = new ScraperDebug({ enabled: true, rootDir });
   await secondRun.capture(null, 'init', 'before');
@@ -77,7 +84,10 @@ test('redacts credentials in HTML, URLs and errors without corrupting journal JS
     error: { message: `Failed for sample-user with ${password}` }
   });
   const [event] = await entries(recorder);
-  assert.equal(event.error.message, 'Failed for [REDACTED] with [REDACTED]');
+  assert.ok(event);
+  assert.ok(event.url);
+  assert.ok(recorder.directory);
+  assert.equal(event.error?.message, 'Failed for [REDACTED] with [REDACTED]');
   assert.match(event.url, /\[REDACTED\]/);
   assert.equal(event.screenshot, 'screenshot.png');
   const html = await fs.readFile(path.join(recorder.directory, event.snapshot, 'page.html'), 'utf8');
@@ -95,16 +105,17 @@ test('detached iframe does not discard the main page or original error', async (
     error: { message: 'Next button missing' }
   });
   const [event] = await entries(recorder);
-  assert.equal(event.frames[0].file, 'page.html');
-  assert.equal(event.frames[1].error, 'Frame detached');
-  assert.equal(event.error.message, 'Next button missing');
+  assert.ok(event);
+  assert.equal(event.frames[0]?.file, 'page.html');
+  assert.equal(event.frames[1]?.error, 'Frame detached');
+  assert.equal(event.error?.message, 'Next button missing');
 });
 
 test('unwritable debug directory preserves action results and error identity', async (t) => {
   const directory = await tempDirectory(t);
   const rootDir = path.join(directory, 'file');
   await fs.writeFile(rootDir, 'not a directory');
-  const warnings = [];
+  const warnings: string[] = [];
   const scraper = new ChromeScraper();
   scraper.debug = new ScraperDebug({ enabled: true, rootDir, onWarning: message => warnings.push(message) });
   assert.equal(await scraper.runStep('success', async () => 42), 42);
@@ -121,12 +132,15 @@ test('screenshot failure preserves HTML and the scraping error', async (t) => {
   browserPage.screenshot = async () => { throw new Error('Screenshot unavailable'); };
   const scraper = new ChromeScraper();
   scraper.debug = recorder;
-  scraper.page = browserPage;
+  const capture = recorder.capture.bind(recorder);
+  t.mock.method(recorder, 'capture', (...[_page, step, phase, details]: Parameters<ScraperDebug['capture']>) =>
+    capture(browserPage, step, phase, details));
   const original = new Error('Missing selector');
   await assert.rejects(scraper.runStep('missing-button', async () => { throw original; }),
     error => error === original);
   const event = (await entries(recorder)).find(entry => entry.phase === 'error');
-  assert.equal(event.error.message, 'Missing selector');
+  assert.ok(event);
+  assert.equal(event.error?.message, 'Missing selector');
   assert.equal(event.screenshotError, 'Screenshot unavailable');
-  assert.equal(event.frames[0].file, 'page.html');
+  assert.equal(event.frames[0]?.file, 'page.html');
 });

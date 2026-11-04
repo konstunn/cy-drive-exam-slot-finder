@@ -1,14 +1,13 @@
-const { TelegramBot } = require('node-telegram-bot-api');
+import { TelegramBot, type Message } from 'node-telegram-bot-api';
+import type ChromeScraper from './scraper.ts';
 
 /**
  * Bot represents a Telegram bot for finding driving exam slots
  */
-class Bot {
-  /**
-   * @param {string} token - Telegram bot token
-   * @param {ChromeScraper} scraper - The scraper instance
-   */
-  constructor(token, scraper) {
+export default class Bot {
+  readonly bot: TelegramBot;
+  readonly scraper: ChromeScraper;
+  constructor(token: string, scraper: ChromeScraper) {
     this.bot = new TelegramBot(token, { polling: true });
     this.scraper = scraper;
 
@@ -17,10 +16,8 @@ class Bot {
 
   /**
    * Generate a reply based on the incoming message text
-   * @param {string} text
-   * @returns {string}
    */
-  getReply(text) {
+  getReply(text: string): string {
     switch (text) {
       case '/start':
         return 'Hello! I\'m a driving exam slot finder bot. Send me any text, and I\'ll repeat it.';
@@ -34,25 +31,25 @@ class Bot {
   /**
    * Set up event handlers for the bot
    */
-  setupEventHandlers() {
+  setupEventHandlers(): void {
     this.bot.on('message', (msg) => {
-      this.handleMessage(msg);
+      this.handleMessage(msg).catch(error => console.error('Error handling message:', error));
     });
   }
 
   /**
    * Handle incoming messages
-   * @param {Object} msg - Telegram message object
    */
-  async handleMessage(msg) {
+  async handleMessage(msg: Message): Promise<void> {
     const chatId = msg.chat.id;
     const text = msg.text;
+    if (text === undefined) return;
 
     const reply = this.getReply(text);
 
     try {
       await this.bot.sendMessage(chatId, reply, {
-        reply_to_message_id: msg.message_id
+        reply_parameters: { message_id: msg.message_id }
       });
     } catch (error) {
       console.error('Error sending message:', error);
@@ -62,16 +59,14 @@ class Bot {
   /**
    * Start the bot
    */
-  start() {
+  start(): void {
     console.log('Bot started and listening for messages...');
   }
 
   /**
    * Stop the bot
    */
-  stop() {
-    this.bot.stopPolling();
+  async stop(): Promise<void> {
+    await this.bot.stopPolling();
   }
 }
-
-module.exports = Bot;
