@@ -123,8 +123,7 @@ test('login waits for a delayed frame and resolves it again after navigation', a
 });
 
 test('failed login leaves authorization unset and captures the missing input', async (t) => {
-  const { scraper, page, submissions, requestErrors } = await fixture(t, { debug: true, missingPassword: true });
-  page.setDefaultTimeout(300);
+  const { scraper, submissions, requestErrors } = await fixture(t, { debug: true, missingPassword: true });
   const creds = { username: 'fixture-failing-user', password: 'fixture-failing-password' };
   await assert.rejects(scraper.login(creds), /Login failed:/);
   assert.equal(scraper.isLoggedIn, false);

@@ -6,8 +6,7 @@ import BrowserActions from './scraper/browser-actions.ts';
 import DebugInspector from './scraper/debug-inspector.ts';
 import StepRunner from './scraper/step-runner.ts';
 import LoginPage from './scraper/pages/login-page.ts';
-
-const WAIT_UNTIL = 'domcontentloaded';
+import ExistingExamPage from './scraper/pages/existing-exam-page.ts';
 
 const LOG_LEVELS = {
   ERROR: 0,
@@ -175,42 +174,25 @@ export default class ChromeScraper {
    * Navigate to the rebooking calendar page
    */
   async navigateToCancelRebook(): Promise<void> {
-    return this.runStep('navigate-to-cancel-rebook', async () => {
-      const page = this.checkInitializedLoggedIn();
-
-      const url = 'https://rtd.mcw.gov.cy/WebPhase1/gui/dlcalendar/CancelRebookCalendar.jsp';
-
-      try {
-        await this.preNavDelay();
-        await page.goto(url, { waitUntil: WAIT_UNTIL });
-      } catch (error) {
-        throw new Error(`Failed to navigate to calendar: ${errorMessage(error)}`);
-      }
-    }, { targetUrl: 'https://rtd.mcw.gov.cy/WebPhase1/gui/dlcalendar/CancelRebookCalendar.jsp' });
+    return this.runStep('navigate-to-cancel-rebook', () => this.getExistingExamPage().open(),
+      ExistingExamPage.openDetails);
   }
 
   /**
    * Choose the existing exam to proceed with rebooking
    */
   async chooseExistingExam(): Promise<void> {
-    return this.runStep('choose-existing-exam', async () => {
-      const page = this.checkInitializedLoggedIn();
+    return this.runStep('choose-existing-exam', () => this.getExistingExamPage().choose(),
+      ExistingExamPage.chooseDetails);
+  }
 
-      try {
-        logStep('Choosing existing exam');
-        logStep(`Using page at ${page.url()}`);
-        await this.logClickableControls(page, 'page');
-
-        logStep('Waiting for existing exam Next button');
-        const nextButton = await this.waitForInputButtonByValue(page, 'Next');
-        logStep('Clicking existing exam Next button and waiting for navigation');
-        await this.preNavDelay();
-        await this.clickElementAndWaitForNavigation(page, nextButton);
-        logStep('Existing exam navigation completed');
-      } catch (error) {
-        throw new Error(`Failed to choose existing exam: ${errorMessage(error)}`);
-      }
-    }, { expected: 'input[type=button] with value Next' });
+  private getExistingExamPage(): ExistingExamPage {
+    return new ExistingExamPage({
+      page: this.checkInitializedLoggedIn(),
+      actions: this.actions,
+      inspector: this.inspector,
+      log: logStep
+    });
   }
 
   /**
