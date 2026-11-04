@@ -7,6 +7,8 @@ import DebugInspector from './scraper/debug-inspector.ts';
 import StepRunner from './scraper/step-runner.ts';
 import LoginPage from './scraper/pages/login-page.ts';
 import ExistingExamPage from './scraper/pages/existing-exam-page.ts';
+import ExamDetailsPage from './scraper/pages/exam-details-page.ts';
+import CalendarPage from './scraper/pages/calendar-page.ts';
 
 const LOG_LEVELS = {
   ERROR: 0,
@@ -199,228 +201,60 @@ export default class ChromeScraper {
    * Get the list of available exam city centers
    */
   async getExamCityCenters(): Promise<string[]> {
-    return this.runStep('get-exam-city-centers', async () => {
-      const page = this.checkInitializedLoggedIn();
-
-      try {
-        logStep(`Getting exam city centers from page at ${page.url()}`);
-
-        await page.waitForSelector('select[name="h_centre"]');
-
-        const centers = await page.evaluate(() => {
-          const options = Array.from(document.querySelectorAll('select[name="h_centre"] option'));
-          return options.map(option => (option.textContent ?? '').trim());
-        });
-
-        return centers;
-      } catch (error) {
-        throw new Error(`Failed to get exam city centers: ${errorMessage(error)}`);
-      }
-    }, { selector: 'select[name="h_centre"]' });
+    return this.runStep('get-exam-city-centers', () => this.getExamDetailsPage().getCenters(),
+      ExamDetailsPage.centersDetails);
   }
 
   /**
    * Submit exam details to search for available slots
    */
   async submitExamDetails(exam: ExamDetails): Promise<void> {
-    return this.runStep('submit-exam-details', async () => {
-      const page = this.checkInitializedLoggedIn();
+    return this.runStep('submit-exam-details', () => this.getExamDetailsPage().submit(exam),
+      ExamDetailsPage.submitDetails);
+  }
 
-      if (!exam.centerCity || !exam.carPlateNumber) {
-        throw new Error('Center city and car plate number must be provided');
-      }
-
-      try {
-        logStep(`Submitting exam details on page at ${page.url()}`);
-        await this.logClickableControls(page, 'page');
-
-        await page.waitForSelector('select[name="h_centre"]');
-        await this.logSelectOptions(page, 'select[name="h_centre"]');
-        await this.selectByValueOrText(page, 'select[name="h_centre"]', exam.centerCity);
-
-        await page.waitForSelector('input[name="h_vrm"]');
-        await page.type('input[name="h_vrm"]', exam.carPlateNumber);
-
-        logStep('Clicking submitBtn input and waiting for navigation');
-        await this.preNavDelay();
-        await this.clickAndWaitForNavigation(page, 'input[type="button"][id="submitBtn"]');
-      } catch (error) {
-        throw new Error(`Failed to submit exam center and plate: ${errorMessage(error)}`);
-      }
-    }, { selector: 'input[type="button"][id="submitBtn"]' });
+  private getExamDetailsPage(): ExamDetailsPage {
+    return new ExamDetailsPage({
+      page: this.checkInitializedLoggedIn(),
+      actions: this.actions,
+      inspector: this.inspector,
+      log: logStep
+    });
   }
 
   /**
    * Get available time slots
    */
   async getTimeSlots(): Promise<ExamTimeSlot[]> {
-    return this.runStep('get-time-slots', async () => {
-      const page = this.checkInitializedLoggedIn();
-
-      try {
-        logStep(`Getting time slots from page at ${page.url()}`);
-
-        // Wait for the calendar or slot container to appear; selector may vary by page
-        // If `.time-slot` isn't present yet, wait a short time for it to arrive
-        try {
-          await page.waitForSelector('.time-slot', { timeout: 3000 });
-        } catch (e) {
-          // it's OK if there are no time slots — we'll return an empty array
-        }
-
-        // Gather raw slot nodes that have a calendar background image (all color variants)
-        const rawSlots = await this.retryEvaluate(page, () => {
-          const tds = Array.from(document.querySelectorAll('td[background*="/WebPhase1/images/drivercalendar/"]'));
-          return tds.map(td => {
-            const bg = td.getAttribute('background') || '';
-            const h5 = td.querySelector('h5');
-            const timeText = h5 ? (h5.textContent ?? '').trim() : null;
-            const a = td.querySelector('a');
-            const href = a ? a.getAttribute('href') : null;
-            return { background: bg, timeText, href };
-          });
-        });
-
-        // Parse each raw slot into { datetime, available }
-        const slots: ExamTimeSlot[] = [];
-
-        // Get current calendar header (may include year) to help with parsing
-        const header = await this.getCalendarMonth();
-
-        for (const s of rawSlots) {
-          const bg = (s.background || '').toLowerCase();
-          const available = !bg.includes('red');
-
-          let datetime = null;
-
-          // Prefer explicit calendarday + examtime from href if present
-          if (s.href) {
-            try {
-              const url = new URL(s.href, page.url());
-              const params = url.searchParams;
-              const examtime = params.get('examtime') || params.get('time') || null;
-              const calendarday = params.get('calendarday') || params.get('calendardate') || null;
-
-              if (calendarday && examtime) {
-                // calendarday expected as DD/MM/YY or DD/MM/YYYY
-                const parts = calendarday.split('/').map(p => p.trim());
-                const [dayText, monthText, yearText] = parts;
-                if (parts.length === 3 && dayText !== undefined && monthText !== undefined && yearText !== undefined) {
-                  const day = parseInt(dayText, 10);
-                  const month = parseInt(monthText, 10) - 1;
-                  let year = parseInt(yearText, 10);
-                  if (year < 100) year += 2000;
-
-                  // examtime might include trailing + or spaces
-                  const timeMatch = String(examtime).match(/(\d{1,2}):(\d{2})/);
-                  if (timeMatch?.[1] && timeMatch[2]) {
-                    const hh = parseInt(timeMatch[1], 10);
-                    const mm = parseInt(timeMatch[2], 10);
-                    datetime = new Date(year, month, day, hh, mm);
-                  } else {
-                    datetime = new Date(year, month, day);
-                  }
-                }
-              }
-            } catch (e) {
-              // ignore parse errors and fall back
-            }
-          }
-
-          // If we couldn't parse a full date, try to parse timeText and guess date using header/year
-          if (!datetime && s.timeText) {
-            const timeMatch = String(s.timeText).match(/(\d{1,2}):(\d{2})/);
-            if (timeMatch?.[1] && timeMatch[2]) {
-              const hh = parseInt(timeMatch[1], 10);
-              const mm = parseInt(timeMatch[2], 10);
-              // try to derive year from header
-              let year = (new Date()).getFullYear();
-              const yearMatch = String(header || '').match(/(20\d{2}|\d{4}|\d{2})/);
-              if (yearMatch?.[1]) {
-                let y = parseInt(yearMatch[1], 10);
-                if (y < 100) y += 2000;
-                if (y >= 1970) year = y;
-              }
-              // No day information available — set to today's date with parsed time (caller can adjust)
-              const today = new Date();
-              datetime = new Date(year, today.getMonth(), today.getDate(), hh, mm);
-            }
-          }
-
-          slots.push({ datetime, available });
-        }
-
-        return slots;
-      } catch (error) {
-        throw new Error(`Failed to get time slots: ${errorMessage(error)}`);
-      }
-    }, { selector: 'td[background*="/WebPhase1/images/drivercalendar/"]' });
+    return this.runStep('get-time-slots', () => this.getCalendarPage(this.checkInitializedLoggedIn()).getSlots(),
+      CalendarPage.slotsDetails);
   }
 
   /**
    * Return only available time slots (filters result of getTimeSlots)
    */
   async getAvailableTimeSlots(): Promise<ExamTimeSlot[]> {
-    return this.runStep('get-available-time-slots', async () => {
-      const slots = await this.getTimeSlots();
-      return Array.isArray(slots) ? slots.filter(s => s && s.available) : [];
-    });
+    return this.runStep('get-available-time-slots',
+      () => this.getCalendarPage(this.checkInitializedLoggedIn()).getAvailableSlots());
   }
 
   /**
    * Move the calendar to the next month.
    */
   async goToNextCalendarMonth(): Promise<void> {
-    return this.runStep('next-calendar-month', async () => {
-      const page = this.checkInitializedLoggedIn();
-
-      try {
-        logStep('Going to next calendar month');
-        await this.logCalendarNavigationControls(page);
-        await this.logCurrentCalendarMonth(page);
-
-        const nextMonthButtonHandle = await this.waitForCalendarNextMonthButton(page);
-
-        // get current month label to detect change
-        const before = await this.getCalendarMonth(page);
-
-        // Click and wait for calendar header to change
-        await this.preNavDelay();
-        await nextMonthButtonHandle.click();
-
-        // Wait until calendar header text changes (or timeout)
-        try {
-          await page.waitForFunction((prev) => {
-            const header = document.querySelector('#calendarHeader');
-            if (!header) return false;
-            return (header.textContent ?? '').replace(/\s+/g, ' ').trim() !== prev;
-          }, {}, before);
-        } catch (e) {
-          // fallback to waiting for network idle or complete state
-          try {
-            await page.waitForFunction(() => document.readyState === 'complete', { timeout: 5000 });
-          } catch (_) {
-            // ignore
-          }
-        }
-
-        logStep('Moved to next calendar month (attempted)');
-        await this.logCurrentCalendarMonth(page);
-      } catch (error) {
-        throw new Error(`Failed to go to next calendar month: ${errorMessage(error)}`);
-      }
-    }, { expected: 'Next month calendar image button' });
+    return this.runStep('next-calendar-month', () => this.getCalendarPage(this.checkInitializedLoggedIn()).nextMonth(),
+      CalendarPage.nextMonthDetails);
   }
 
   /**
    * Click on a specific time slot
    */
   async clickTimeSlot(slot: ExamTimeSlot): Promise<void> {
-    this.checkInitializedLoggedIn();
+    return this.getCalendarPage(this.checkInitializedLoggedIn()).clickTimeSlot(slot);
+  }
 
-    // TODO: Implement time slot clicking logic
-    // This depends on the actual HTML structure of the time slots
-    console.log('Time slot clicking not yet implemented');
+  private getCalendarPage(context: BrowserContext = this.getPage()): CalendarPage {
+    return new CalendarPage({ context, actions: this.actions, inspector: this.inspector, steps: this.steps, log: logStep });
   }
 
   /**
@@ -485,59 +319,21 @@ export default class ChromeScraper {
    * Find the calendar next-month image button.
    */
   async waitForCalendarNextMonthButton(context: BrowserContext): Promise<ElementHandle<HTMLImageElement>> {
-    await context.waitForFunction(() => {
-      return Array.from(document.querySelectorAll('img')).some(image => {
-        const title = image.getAttribute('title') || '';
-        const src = image.getAttribute('src') || '';
-        const onclick = image.getAttribute('onclick') || '';
-
-        return title.trim() === 'Next month.'
-          || src.includes('dlcalendar_nextmonth_black.gif')
-          || onclick.includes('addMonths(event, 1)');
-      });
-    });
-
-    return context.evaluateHandle(() => {
-      const image = Array.from(document.querySelectorAll('img')).find(image => {
-        const title = image.getAttribute('title') || '';
-        const src = image.getAttribute('src') || '';
-        const onclick = image.getAttribute('onclick') || '';
-
-        return title.trim() === 'Next month.'
-          || src.includes('dlcalendar_nextmonth_black.gif')
-          || onclick.includes('addMonths(event, 1)');
-      });
-      if (!image) throw new Error('Next month calendar button disappeared');
-      return image;
-    });
+    return this.getCalendarPage(context).waitForNextMonthButton();
   }
 
   /**
    * Get the current calendar month label.
    */
   async getCalendarMonth(context: BrowserContext = this.getPage()): Promise<string | null> {
-    return this.runStep('get-calendar-month', async () => {
-      try {
-        await context.waitForSelector('#calendarHeader', { timeout: 5000 });
-      } catch (e) {
-        // no header found, return null
-        return null;
-      }
-
-      return this.retryEvaluate(context, () => {
-        const header = document.querySelector('#calendarHeader');
-        if (!header) return null;
-        return (header.textContent ?? '').replace(/\s+/g, ' ').trim();
-      });
-    }, { selector: '#calendarHeader' });
+    return this.getCalendarPage(context).getMonth();
   }
 
   /**
    * Log the current calendar month label.
    */
   async logCurrentCalendarMonth(context: BrowserContext = this.getPage()): Promise<void> {
-    const month = await this.getCalendarMonth(context);
-    logStep(`Calendar month: ${month || '<not found>'}`);
+    return this.getCalendarPage(context).logCurrentMonth();
   }
 
   /**
