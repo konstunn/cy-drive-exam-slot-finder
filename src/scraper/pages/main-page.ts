@@ -9,7 +9,7 @@ const BOOKING_TEXT = 'Κράτηση και Πληρωμή για Εξέταση
 
 interface MainPageOptions {
   page: Page;
-  actions: Pick<BrowserActions, 'preNavDelay' | 'clickAndWaitForNavigation'>;
+  actions: Pick<BrowserActions, 'preNavDelay' | 'clickAndWaitForNavigation' | 'selectByValueOrText'>;
   steps: StepExecutor;
 }
 
@@ -53,7 +53,7 @@ export default class MainPage {
         const center = await page.waitForFrame(frame => frame.name() === 'center');
         await actions.preNavDelay();
         await actions.clickAndWaitForNavigation(center, link);
-        const booking = new ExamBookingPage({ context: center, steps });
+        const booking = new ExamBookingPage({ context: center, actions, steps });
         return await booking.waitUntilReady();
       } finally {
         await link.dispose();

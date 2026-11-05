@@ -4,9 +4,17 @@ import ChromeScraper from '../src/scraper.ts';
 async function main(): Promise<void> {
   const username = process.env.SCRAPER_USERNAME;
   const password = process.env.SCRAPER_PASSWORD;
+  const centerCity = process.env.SCRAPER_CITY_CENTER;
+  const carPlateNumber = process.env.SCRAPER_CAR_PLATE;
+  const drivingCategory = process.env.SCRAPER_DRIVING_CATEGORY;
 
   if (!username || !password) {
     console.error('Please set SCRAPER_USERNAME and SCRAPER_PASSWORD environment variables');
+    process.exit(1);
+  }
+
+  if (!centerCity || !carPlateNumber || !drivingCategory) {
+    console.error('Please set SCRAPER_CITY_CENTER, SCRAPER_CAR_PLATE and SCRAPER_DRIVING_CATEGORY environment variables');
     process.exit(1);
   }
 
@@ -36,6 +44,11 @@ async function main(): Promise<void> {
     console.log('Getting exam city centers...');
     const centers = await booking.getCenters();
     console.log('Available centers:', centers);
+
+    console.log('Available driving categories:', await booking.getDrivingCategories());
+    console.log('Filling exam booking details...');
+    await booking.fillDetails({ centerCity, carPlateNumber, drivingCategory });
+    console.log('Exam booking details filled!');
 
     console.log('Scraper test completed successfully!');
     console.log('Keeping browser open for 60 seconds...');

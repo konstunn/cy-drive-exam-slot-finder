@@ -75,6 +75,9 @@ Fill in these values in `.env`:
 ```dotenv
 SCRAPER_USERNAME="your_username"
 SCRAPER_PASSWORD="your_password"
+SCRAPER_CITY_CENTER="your_city_center"
+SCRAPER_CAR_PLATE="your_car_plate"
+SCRAPER_DRIVING_CATEGORY="your_driving_category"
 ```
 
 For every subsequent run:
@@ -89,8 +92,11 @@ The Telegram token is not required for this script. It opens a visible browser,
 so run it in a graphical desktop session. The `.env` file is ignored by Git.
 
 The script logs in, expands the driving exam menu, clicks
-«Κράτηση και Πληρωμή για Εξέταση Άδειας Οδήγησης» and reads the available centers
-from the booking form. It stops before submitting the form. The new page API
+«Κράτηση και Πληρωμή για Εξέταση Άδειας Οδήγησης» and fills the center, car plate
+and driving category in the booking form. It keeps the form open for 60 seconds
+before closing the browser. Center and category accept either the exact option
+label (including Greek letters) or its value. The script lists both sets of
+labels before filling the form and stops before submission. The new page API
 returns the current page for menu expansion and a ready `ExamBookingPage` for
 the booking transition:
 
@@ -99,6 +105,8 @@ const main = await scraper.login({ username, password });
 await main.openDrivingExamMenu();
 const booking = await main.openBookingAndPayment();
 const centers = await booking.getCenters();
+const categories = await booking.getDrivingCategories();
+await booking.fillDetails({ centerCity, carPlateNumber, drivingCategory });
 ```
 
 ### Scraper Debug Files

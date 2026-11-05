@@ -24,6 +24,7 @@ async function fixture(t: TestContext, { missingCategory = false, wrongDestinati
   });
   await scraper.initBrowser(2000, { headless: true, debug: true, debugDir: rootDir });
   const page = scraper.getPage();
+  page.setDefaultNavigationTimeout(10000);
   const requests: string[] = [];
   const requestErrors: unknown[] = [];
 
@@ -69,10 +70,10 @@ async function fixture(t: TestContext, { missingCategory = false, wrongDestinati
       case `${CALENDAR}NewestCalendar.jsp`:
       case `${CALENDAR}WrongPage.jsp`:
         body = `<form method="post" action="/must-not-submit">
-          <select name="h_centre"><option value="NIC"> Nicosia </option><option value="LIM">Limassol</option></select>
-          <input name="h_vrm"><input type="button" id="submitBtn">
+          <select name="h_centre" onchange="this.dataset.changed = this.value"><option value="NIC"> Nicosia </option><option value="LIM">Limassol</option></select>
+          <input name="h_vrm" value="OLD123" maxlength="7" onchange="this.value = this.value.toUpperCase()"><input type="button" id="submitBtn">
         </form>${missingCategory ? '' : `<script>setTimeout(() => {
-          document.querySelector('form').insertAdjacentHTML('beforeend', '<select name="h_licence_category"><option>B</option></select>');
+          document.querySelector('form').insertAdjacentHTML('beforeend', '<select name="h_licence_category" onchange="this.dataset.changed = this.value"><option value="-1">Category</option><option value="ΒΒ%01/01/2026"> ΒΒ </option><option value="Α1%02/02/2026">Α1</option><option disabled value="C">C</option></select>');
         }, 100);</script>`}`;
         break;
       case '/favicon.ico':
@@ -139,4 +140,62 @@ test('booking rejects incomplete forms and unexpected destinations and records f
       assert.equal(failure?.screenshot, 'screenshot.png');
     });
   }
+});
+
+test('booking fills center and category by label or value and replaces the plate using the form change handler', async t => {
+  const { scraper, page, main, requests, requestErrors } = await fixture(t);
+  await main.openDrivingExamMenu();
+  const booking = await main.openBookingAndPayment();
+  const center = await page.waitForFrame(frame => frame.name() === 'center');
+  assert.deepEqual(await booking.getDrivingCategories(), ['Category', 'ΒΒ', 'Α1', 'C']);
+  const bookingUrl = center.url();
+
+  for (const [exam, expectedCenter, expectedCategory, expectedPlate] of [
+    [{ centerCity: ' Limassol ', drivingCategory: ' ΒΒ ', carPlateNumber: ' abc123 ' }, 'LIM', 'ΒΒ%01/01/2026', 'ABC123'],
+    [{ centerCity: 'NIC', drivingCategory: 'Α1%02/02/2026', carPlateNumber: 'xyz789' }, 'NIC', 'Α1%02/02/2026', 'XYZ789']
+  ] as const) {
+    assert.equal(await booking.fillDetails(exam), booking);
+    const form = await center.evaluate(() => {
+      const city = document.querySelector<HTMLSelectElement>('select[name="h_centre"]');
+      const category = document.querySelector<HTMLSelectElement>('select[name="h_licence_category"]');
+      return {
+        city: city?.value,
+        cityChange: city?.dataset.changed,
+        category: category?.value,
+        categoryChange: category?.dataset.changed,
+        plate: document.querySelector<HTMLInputElement>('input[name="h_vrm"]')?.value
+      };
+    });
+    assert.deepEqual(form, {
+      city: expectedCenter, cityChange: expectedCenter,
+      category: expectedCategory, categoryChange: expectedCategory, plate: expectedPlate
+    });
+  }
+
+  assert.equal(center.url(), bookingUrl);
+  assert.equal(requests.filter(route => route.startsWith('POST ')).length, 1);
+  assert.deepEqual(requestErrors, []);
+  const events = await journal(scraper);
+  assert.equal(events.some(entry => entry.phase === 'error'), false);
+  assert.equal(events.filter(entry => entry.step === 'fill-exam-booking-details' && entry.phase === 'after').length, 2);
+});
+
+test('booking rejects missing fields, unknown or placeholder options and plates that would be truncated', async t => {
+  const { scraper, main, requests, requestErrors } = await fixture(t);
+  await main.openDrivingExamMenu();
+  const booking = await main.openBookingAndPayment();
+  const valid = { centerCity: 'Limassol', drivingCategory: 'ΒΒ', carPlateNumber: 'ABC123' };
+  for (const field of ['centerCity', 'drivingCategory', 'carPlateNumber'] as const) {
+    await assert.rejects(booking.fillDetails({ ...valid, [field]: '  ' }), /must be provided/);
+  }
+  await assert.rejects(booking.fillDetails({ ...valid, centerCity: 'Unknown center' }), /Could not find option/);
+  await assert.rejects(booking.fillDetails({ ...valid, drivingCategory: 'Unknown category' }), /Could not find option/);
+  await assert.rejects(booking.fillDetails({ ...valid, drivingCategory: 'Category' }), /Please select a valid option/);
+  await assert.rejects(booking.fillDetails({ ...valid, drivingCategory: 'C' }), /Please select a valid option/);
+  await assert.rejects(booking.fillDetails({ ...valid, carPlateNumber: 'TOO-LONG' }), /maximum length of 7/);
+  assert.equal(requests.filter(route => route.startsWith('POST ')).length, 1);
+  assert.deepEqual(requestErrors, []);
+  const events = await journal(scraper);
+  const failure = events.find(entry => entry.step === 'fill-exam-booking-details' && entry.phase === 'error');
+  assert.equal(failure?.screenshot, 'screenshot.png');
 });

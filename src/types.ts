@@ -17,6 +17,10 @@ export interface ExamDetails {
   carPlateNumber: string;
 }
 
+export interface ExamBookingDetails extends ExamDetails {
+  drivingCategory: string;
+}
+
 export type LogLevel = 'ERROR' | 'WARN' | 'INFO' | 'DEBUG';
 
 export interface ScraperOptions extends LaunchOptions {

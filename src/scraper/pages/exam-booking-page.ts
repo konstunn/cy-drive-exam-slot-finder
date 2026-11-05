@@ -1,4 +1,5 @@
-import type { BrowserContext } from '../../types.ts';
+import type { BrowserContext, ExamBookingDetails } from '../../types.ts';
+import type BrowserActions from '../browser-actions.ts';
 import type { StepExecutor } from '../step-runner.ts';
 
 const CENTER_SELECTOR = 'select[name="h_centre"]';
@@ -7,6 +8,7 @@ const PLATE_SELECTOR = 'input[name="h_vrm"]';
 
 interface ExamBookingPageOptions {
   context: BrowserContext;
+  actions: Pick<BrowserActions, 'selectByValueOrText'>;
   steps: StepExecutor;
 }
 
@@ -38,5 +40,58 @@ export default class ExamBookingPage {
         return options.map(option => (option.textContent ?? '').trim());
       });
     }, { selector: CENTER_SELECTOR });
+  }
+
+  async getDrivingCategories(): Promise<string[]> {
+    const { context, steps } = this.options;
+    return steps.run('get-exam-booking-categories', async () => {
+      await context.waitForSelector(CATEGORY_SELECTOR);
+      return context.$$eval(`${CATEGORY_SELECTOR} option`, options => {
+        return options.map(option => (option.textContent ?? '').trim());
+      });
+    }, { selector: CATEGORY_SELECTOR });
+  }
+
+  async fillDetails(exam: ExamBookingDetails): Promise<this> {
+    const { context, actions, steps } = this.options;
+    return steps.run('fill-exam-booking-details', async () => {
+      const center = exam.centerCity.trim();
+      const category = exam.drivingCategory.trim();
+      const plate = exam.carPlateNumber.trim();
+      if (!center || !category || !plate) {
+        throw new Error('Center city, car plate number and driving category must be provided');
+      }
+
+      await context.waitForSelector(PLATE_SELECTOR);
+      await context.$eval(PLATE_SELECTOR, (input, value) => {
+        if (!(input instanceof HTMLInputElement)) throw new Error('Car plate input not found');
+        if (input.maxLength >= 0 && value.length > input.maxLength) {
+          throw new Error(`Car plate number exceeds the maximum length of ${input.maxLength}`);
+        }
+      }, plate);
+
+      for (const [selector, value] of [[CENTER_SELECTOR, center], [CATEGORY_SELECTOR, category]] as const) {
+        await context.waitForSelector(selector);
+        await actions.selectByValueOrText(context, selector, value);
+        await context.$eval(selector, select => {
+          if (!(select instanceof HTMLSelectElement)) throw new Error('Exam detail select not found');
+          const option = select.selectedOptions[0];
+          if (!option || option.disabled || option.parentElement?.matches('optgroup:disabled')
+            || !option.value || option.value === '-1') {
+            throw new Error(`Please select a valid option for ${select.name}`);
+          }
+        });
+      }
+
+      await context.$eval(PLATE_SELECTOR, input => {
+        if (!(input instanceof HTMLInputElement)) throw new Error('Car plate input not found');
+        input.value = '';
+      });
+      await context.type(PLATE_SELECTOR, plate);
+      await context.$eval(PLATE_SELECTOR, input => {
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      return this;
+    }, { expected: 'Exam center, driving category and car plate filled in' });
   }
 }
