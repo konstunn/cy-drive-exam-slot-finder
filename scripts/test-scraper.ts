@@ -1,18 +1,12 @@
+import { setTimeout as sleep } from 'node:timers/promises';
 import ChromeScraper from '../src/scraper.ts';
 
 async function main(): Promise<void> {
   const username = process.env.SCRAPER_USERNAME;
   const password = process.env.SCRAPER_PASSWORD;
-  const centerCity = process.env.SCRAPER_CITY_CENTER;
-  const carPlateNumber = process.env.SCRAPER_CAR_PLATE;
 
   if (!username || !password) {
     console.error('Please set SCRAPER_USERNAME and SCRAPER_PASSWORD environment variables');
-    process.exit(1);
-  }
-
-  if (!centerCity || !carPlateNumber) {
-    console.error('Please set SCRAPER_CITY_CENTER and SCRAPER_CAR_PLATE environment variables');
     process.exit(1);
   }
 
@@ -23,51 +17,29 @@ async function main(): Promise<void> {
     const debug = process.env.SCRAPER_DEBUG !== '0';
     await scraper.initBrowser(100 * 1e3, {
       headless: false,
+      args: ['--start-maximized', '--force-device-scale-factor=2'],
       debug,
       logLevel: debug ? 'DEBUG' : 'INFO'
     });
 
     console.log('Logging in...');
-    await scraper.login({ username, password });
+    const main = await scraper.login({ username, password });
     console.log('Login successful!');
 
-    console.log('Navigating to cancel/rebook page...');
-    await scraper.navigateToCancelRebook();
-    console.log('Navigation successful!');
+    console.log('Opening driving exam menu...');
+    await main.openDrivingExamMenu();
 
-    console.log('Choosing existing exam...');
-    await scraper.chooseExistingExam();
-    console.log('Exam chosen successfully!');
+    console.log('Opening Κράτηση και Πληρωμή για Εξέταση Άδειας Οδήγησης...');
+    const booking = await main.openBookingAndPayment();
+    console.log('Booking and payment page opened!');
 
     console.log('Getting exam city centers...');
-    const centers = await scraper.getExamCityCenters();
+    const centers = await booking.getCenters();
     console.log('Available centers:', centers);
 
-    // For manual testing, you can add more steps here
-    // For example, submit exam details if you have them
-    const exam = {
-      centerCity,
-      carPlateNumber
-    };
-    await scraper.submitExamDetails(exam);
-    console.log('Exam details submitted!');
-
-    let currentMonth = await scraper.getCalendarMonth();
-    console.log('Current calendar month:', currentMonth);
-
-    let timeSlots = await scraper.getTimeSlots();
-    console.log('Available time slots:', timeSlots);
-
-    await scraper.goToNextCalendarMonth();
-    console.log('Moved to next calendar month!');
-
-    currentMonth = await scraper.getCalendarMonth();
-    console.log('Current calendar month:', currentMonth);
-
-    timeSlots = await scraper.getTimeSlots();
-    console.log('Available time slots in next month:', timeSlots);
-
     console.log('Scraper test completed successfully!');
+    console.log('Keeping browser open for 60 seconds...');
+    await sleep(60_000);
   } catch (error) {
     console.error('Error:', error);
     process.exitCode = 1;

@@ -9,6 +9,7 @@ import LoginPage from './scraper/pages/login-page.ts';
 import ExistingExamPage from './scraper/pages/existing-exam-page.ts';
 import ExamDetailsPage from './scraper/pages/exam-details-page.ts';
 import CalendarPage from './scraper/pages/calendar-page.ts';
+import MainPage from './scraper/pages/main-page.ts';
 
 const LOG_LEVELS = {
   ERROR: 0,
@@ -106,6 +107,8 @@ export default class ChromeScraper {
     return this.steps.run('init-browser', async () => {
       this.browser = await puppeteer.launch({
         headless: true,
+        defaultViewport: null,
+        ...launchOptions,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -113,9 +116,9 @@ export default class ChromeScraper {
           '--disable-accelerated-2d-canvas',
           '--no-first-run',
           '--no-zygote',
-          '--disable-gpu'
-        ],
-        ...launchOptions
+          '--disable-gpu',
+          ...(launchOptions.args ?? [])
+        ]
       });
 
       this.page = await this.browser.newPage();
@@ -140,7 +143,7 @@ export default class ChromeScraper {
   /**
    * Login to the driving exam booking system
    */
-  async login(creds: Credentials): Promise<void> {
+  async login(creds: Credentials): Promise<MainPage> {
     this.creds = creds;
     return this.steps.run('login', async () => {
       const loginPage = new LoginPage({
@@ -155,6 +158,7 @@ export default class ChromeScraper {
         await loginPage.login(creds);
         this.isLoggedIn = true;
         log('Successfully logged in to driving exam system', 'INFO');
+        return new MainPage({ page: this.getPage(), actions: this.actions, steps: this.steps });
       } catch (error) {
         throw new Error(`Login failed: ${errorMessage(error)}`);
       }

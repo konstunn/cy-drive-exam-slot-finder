@@ -75,8 +75,6 @@ Fill in these values in `.env`:
 ```dotenv
 SCRAPER_USERNAME="your_username"
 SCRAPER_PASSWORD="your_password"
-SCRAPER_CITY_CENTER="your_city_center"
-SCRAPER_CAR_PLATE="your_car_plate"
 ```
 
 For every subsequent run:
@@ -89,6 +87,19 @@ This command automatically loads `.env`; no `export` or `source` commands are
 needed. Existing environment variables take precedence over `.env` values.
 The Telegram token is not required for this script. It opens a visible browser,
 so run it in a graphical desktop session. The `.env` file is ignored by Git.
+
+The script logs in, expands the driving exam menu, clicks
+«Κράτηση και Πληρωμή για Εξέταση Άδειας Οδήγησης» and reads the available centers
+from the booking form. It stops before submitting the form. The new page API
+returns the current page for menu expansion and a ready `ExamBookingPage` for
+the booking transition:
+
+```ts
+const main = await scraper.login({ username, password });
+await main.openDrivingExamMenu();
+const booking = await main.openBookingAndPayment();
+const centers = await booking.getCenters();
+```
 
 ### Scraper Debug Files
 
