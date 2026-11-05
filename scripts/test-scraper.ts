@@ -50,6 +50,11 @@ async function main(): Promise<void> {
     await booking.fillDetails({ centerCity, carPlateNumber, drivingCategory });
     console.log('Exam booking details filled!');
 
+    console.log('Clicking Επόμενο and opening the calendar...');
+    const calendar = await booking.next();
+    console.log('Calendar month:', await calendar.getMonth());
+    console.log('Available time slots:', await calendar.getAvailableSlots());
+
     console.log('Scraper test completed successfully!');
     console.log('Keeping browser open for 60 seconds...');
     await sleep(60_000);

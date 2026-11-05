@@ -27,6 +27,17 @@ export default class CalendarPage {
     this.options = options;
   }
 
+  async waitUntilReady(): Promise<this> {
+    const { context, steps } = this.options;
+    return steps.run('wait-for-calendar-page', async () => {
+      await context.waitForFunction(selector => {
+        const header = document.querySelector(selector);
+        return Boolean(header?.textContent?.trim());
+      }, {}, HEADER_SELECTOR);
+      return this;
+    }, { selector: HEADER_SELECTOR });
+  }
+
   async getSlots(): Promise<ExamTimeSlot[]> {
     const { context, actions, log } = this.options;
     try {

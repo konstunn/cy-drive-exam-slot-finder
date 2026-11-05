@@ -1,5 +1,6 @@
 import type { Page } from 'puppeteer';
 import type BrowserActions from '../browser-actions.ts';
+import type DebugInspector from '../debug-inspector.ts';
 import type { StepExecutor } from '../step-runner.ts';
 import ExamBookingPage from './exam-booking-page.ts';
 
@@ -9,8 +10,10 @@ const BOOKING_TEXT = 'Κράτηση και Πληρωμή για Εξέταση
 
 interface MainPageOptions {
   page: Page;
-  actions: Pick<BrowserActions, 'preNavDelay' | 'clickAndWaitForNavigation' | 'selectByValueOrText'>;
+  actions: Pick<BrowserActions, 'preNavDelay' | 'clickAndWaitForNavigation' | 'selectByValueOrText' | 'retryEvaluate'>;
+  inspector: Pick<DebugInspector, 'logCalendarNavigationControls'>;
   steps: StepExecutor;
+  log: (message: string) => void;
 }
 
 export default class MainPage {
@@ -35,7 +38,7 @@ export default class MainPage {
   }
 
   async openBookingAndPayment(): Promise<ExamBookingPage> {
-    const { page, actions, steps } = this.options;
+    const { page, actions, inspector, steps, log } = this.options;
     return steps.run('open-booking-and-payment', async () => {
       const menu = await page.waitForFrame(frame => {
         if (frame.name() !== 'left') return false;
@@ -53,7 +56,7 @@ export default class MainPage {
         const center = await page.waitForFrame(frame => frame.name() === 'center');
         await actions.preNavDelay();
         await actions.clickAndWaitForNavigation(center, link);
-        const booking = new ExamBookingPage({ context: center, actions, steps });
+        const booking = new ExamBookingPage({ context: center, actions, inspector, steps, log });
         return await booking.waitUntilReady();
       } finally {
         await link.dispose();

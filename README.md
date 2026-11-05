@@ -93,10 +93,11 @@ so run it in a graphical desktop session. The `.env` file is ignored by Git.
 
 The script logs in, expands the driving exam menu, clicks
 «Κράτηση και Πληρωμή για Εξέταση Άδειας Οδήγησης» and fills the center, car plate
-and driving category in the booking form. It keeps the form open for 60 seconds
-before closing the browser. Center and category accept either the exact option
-label (including Greek letters) or its value. The script lists both sets of
-labels before filling the form and stops before submission. The new page API
+and driving category in the booking form. It clicks «Επόμενο», waits for the
+calendar, then prints its month and available slots. It keeps the calendar open
+for 60 seconds before closing the browser. Center and category accept either
+the exact option label (including Greek letters) or its value. The script lists
+both sets of labels before filling the form. The new page API
 returns the current page for menu expansion and a ready `ExamBookingPage` for
 the booking transition:
 
@@ -107,6 +108,8 @@ const booking = await main.openBookingAndPayment();
 const centers = await booking.getCenters();
 const categories = await booking.getDrivingCategories();
 await booking.fillDetails({ centerCity, carPlateNumber, drivingCategory });
+const calendar = await booking.next();
+const slots = await calendar.getAvailableSlots();
 ```
 
 ### Scraper Debug Files

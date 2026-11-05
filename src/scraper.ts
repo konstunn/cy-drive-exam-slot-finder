@@ -158,7 +158,9 @@ export default class ChromeScraper {
         await loginPage.login(creds);
         this.isLoggedIn = true;
         log('Successfully logged in to driving exam system', 'INFO');
-        return new MainPage({ page: this.getPage(), actions: this.actions, steps: this.steps });
+        return new MainPage({
+          page: this.getPage(), actions: this.actions, inspector: this.inspector, steps: this.steps, log: logStep
+        });
       } catch (error) {
         throw new Error(`Login failed: ${errorMessage(error)}`);
       }

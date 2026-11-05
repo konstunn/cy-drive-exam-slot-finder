@@ -1,15 +1,20 @@
 import type { BrowserContext, ExamBookingDetails } from '../../types.ts';
 import type BrowserActions from '../browser-actions.ts';
+import type DebugInspector from '../debug-inspector.ts';
 import type { StepExecutor } from '../step-runner.ts';
+import CalendarPage from './calendar-page.ts';
 
 const CENTER_SELECTOR = 'select[name="h_centre"]';
 const CATEGORY_SELECTOR = 'select[name="h_licence_category"]';
 const PLATE_SELECTOR = 'input[name="h_vrm"]';
+const NEXT_SELECTOR = 'input[type="button"][id="submitBtn"][value="Επόμενο"]';
 
 interface ExamBookingPageOptions {
   context: BrowserContext;
-  actions: Pick<BrowserActions, 'selectByValueOrText'>;
+  actions: Pick<BrowserActions, 'selectByValueOrText' | 'preNavDelay' | 'clickAndWaitForNavigation' | 'retryEvaluate'>;
+  inspector: Pick<DebugInspector, 'logCalendarNavigationControls'>;
   steps: StepExecutor;
+  log: (message: string) => void;
 }
 
 export default class ExamBookingPage {
@@ -93,5 +98,17 @@ export default class ExamBookingPage {
       });
       return this;
     }, { expected: 'Exam center, driving category and car plate filled in' });
+  }
+
+  async next(): Promise<CalendarPage> {
+    const { context, actions, inspector, steps, log } = this.options;
+    return steps.run('submit-exam-booking-details', async () => {
+      await context.waitForSelector(NEXT_SELECTOR, { visible: true });
+      await actions.preNavDelay();
+      await actions.clickAndWaitForNavigation(context, NEXT_SELECTOR);
+      const calendar = new CalendarPage({ context, actions, inspector, steps, log });
+      // NewCalendarDate.jsp submits another form on load; wait for the final calendar.
+      return calendar.waitUntilReady();
+    }, { selector: NEXT_SELECTOR, expected: 'Calendar after clicking Επόμενο' });
   }
 }
