@@ -200,13 +200,39 @@ test('shared browser actions and inspector work with explicit dependencies', asy
   assert.ok(child.url().endsWith('#frame-next'));
 
   const original = new Error('Element click failed');
-  t.mock.method(frameButton, 'click', async () => { throw original; });
+  await child.setContent('<input type="button" id="failing-click" value="Next">');
+  const failingButton = await child.$('#failing-click');
+  assert.ok(failingButton);
+  t.mock.method(failingButton, 'click', async () => { throw original; });
   t.mock.method(child, 'waitForNavigation', async () => null);
-  await assert.rejects(actions.clickAndWaitForNavigation(child, frameButton), error => error === original);
+  await assert.rejects(actions.clickAndWaitForNavigation(child, failingButton), error => error === original);
   const failure = capture.mock.calls.at(-1)?.arguments;
   assert.ok(failure);
   assert.equal(failure[1], 'click-element-and-navigate');
   assert.equal(failure[2], 'error');
   assert.equal(failure[3]?.error?.message, original.message);
   await frameButton.dispose();
+  await failingButton.dispose();
+});
+
+test('zero-delay navigation waits for a delayed visible and enabled control and clicks it once', async t => {
+  const scraper = new ChromeScraper();
+  t.after(() => scraper.close());
+  await scraper.initBrowser(3000, { headless: true, debug: false, delayScale: 0, navDelayMs: 500 });
+  const page = scraper.getPage();
+  const log = () => {};
+  const inspector = new DebugInspector(log);
+  const steps = new StepRunner({ getPage: () => page, getRecorder: () => scraper.debug });
+  const browserActions = new BrowserActions({ steps, inspector, getNavDelayMs: () => 500, getDelayScale: () => 0, log });
+  await page.setContent(`<input id="next" type="button" disabled style="display:none"
+    onclick="this.dataset.clicks = String(Number(this.dataset.clicks || 0) + 1); location.hash = 'ready'">
+    <script>setTimeout(() => {
+      const button = document.querySelector('#next');
+      button.style.display = '';
+      button.disabled = false;
+    }, 150);</script>`);
+  await browserActions.preNavDelay();
+  await browserActions.clickAndWaitForNavigation(page, '#next');
+  assert.ok(page.url().endsWith('#ready'));
+  assert.equal(await page.$eval('#next', button => button.getAttribute('data-clicks')), '1');
 });

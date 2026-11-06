@@ -12,6 +12,11 @@ export interface ExamTimeSlot {
   available: boolean;
 }
 
+export interface SlotSearchOptions {
+  from?: Date;
+  until?: Date;
+}
+
 export interface ExamDetails {
   centerCity: string;
   carPlateNumber: string;
@@ -25,6 +30,7 @@ export type LogLevel = 'ERROR' | 'WARN' | 'INFO' | 'DEBUG';
 
 export interface ScraperOptions extends LaunchOptions {
   navDelayMs?: number;
+  delayScale?: number;
   logLevel?: LogLevel;
   debug?: boolean;
   debugDir?: string;

@@ -93,3 +93,13 @@ test('calendar supports frame contexts and preserves authorization checks and mi
   assert.equal(failure.expected, 'Next month calendar image button');
   assert.equal(failure.screenshot, 'screenshot.png');
 });
+
+test('calendar does not report a successful month change when the button leaves the month unchanged', async t => {
+  const { scraper, page } = await fixture(t);
+  scraper.isLoggedIn = true;
+  await page.setContent('<div id="calendarHeader">November 2026</div><img title="Next month." style="width:20px;height:20px">');
+  await assert.rejects(scraper.goToNextCalendarMonth(), /Failed to go to next calendar month/);
+  assert.equal(await scraper.getCalendarMonth(), 'November 2026');
+  const events = await journal(scraper);
+  assert.equal(events.some(event => event.step === 'next-calendar-month' && event.phase === 'after'), false);
+});

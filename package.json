@@ -10,7 +10,7 @@
     "check": "npm run typecheck && npm test",
     "test": "node --test tests/*.test.ts",
     "test:browser": "node --test tests/*.browser.ts",
-    "test-scraper": "node --env-file=.env scripts/test-scraper.ts"
+    "test-scraper": "node scripts/test-scraper.ts"
   },
   "keywords": [
     "telegram",

@@ -53,6 +53,7 @@ export default class ChromeScraper {
   page: Page | null;
   debug: ScraperDebug;
   private navDelayMs = 0;
+  private delayScale = 1;
   private readonly actions: BrowserActions;
   private readonly inspector: DebugInspector;
   private readonly steps: StepRunner;
@@ -69,6 +70,7 @@ export default class ChromeScraper {
       steps: this.steps,
       inspector: this.inspector,
       getNavDelayMs: () => this.navDelayMs,
+      getDelayScale: () => this.delayScale,
       log: logStep
     });
   }
@@ -92,11 +94,15 @@ export default class ChromeScraper {
       throw new Error('Browser already initialized: call close() before reinitializing');
     }
     // Scraper options must not be forwarded to Puppeteer.
-    const { navDelayMs = 0, logLevel = 'INFO',
+    const { navDelayMs = 0, delayScale = 1, logLevel = 'INFO',
       debug = process.env.SCRAPER_DEBUG === '1',
       debugDir = process.env.SCRAPER_DEBUG_DIR || 'debug', ...launchOptions } = options;
+    if (!Number.isFinite(navDelayMs) || navDelayMs < 0 || !Number.isFinite(delayScale) || delayScale < 0) {
+      throw new Error('navDelayMs and delayScale must be finite non-negative numbers');
+    }
     this.debug = this.createDebugRecorder(debug, debugDir);
-    this.navDelayMs = Number(navDelayMs) || 0;
+    this.navDelayMs = navDelayMs;
+    this.delayScale = delayScale;
 
     // Set the global log level for all scraper operations
     if (logLevel) {

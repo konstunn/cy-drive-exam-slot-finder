@@ -24,7 +24,7 @@ async function fixture(t: TestContext, { missingCategory = false, wrongDestinati
       await fs.rm(rootDir, { recursive: true, force: true });
     }
   });
-  await scraper.initBrowser(2000, { headless: true, debug: true, debugDir: rootDir });
+  await scraper.initBrowser(2000, { headless: true, debug: true, debugDir: rootDir, delayScale: 0, navDelayMs: 100 });
   const page = scraper.getPage();
   page.setDefaultNavigationTimeout(10000);
   const requests: string[] = [];
